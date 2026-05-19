@@ -52,6 +52,26 @@ export function useWhatsappAccounts() {
     return response.data
   }
 
+  async function syncContacts(accountId: string) {
+    try {
+      const response = await $fetch<{ data: { synced: number; account_id: string } }>('/api/whatsapp/sync', {
+        method: 'POST',
+        body: { whatsapp_account_id: accountId }
+      })
+      if (response.data?.synced) {
+        toast.add({
+          title: `${response.data.synced} contatos sincronizados`,
+          color: 'success'
+        })
+      }
+      return response.data
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Falha ao sincronizar contatos.'
+      toast.add({ title: 'Sync de contatos falhou', description: message, color: 'warning' })
+      return null
+    }
+  }
+
   async function simulateIncomingMessage(accountId: string) {
     const response = await $fetch('/api/dev/simulate-message', {
       method: 'POST',
@@ -81,6 +101,7 @@ export function useWhatsappAccounts() {
     createInstance,
     reconnect,
     disconnect,
-    simulateIncomingMessage
+    simulateIncomingMessage,
+    syncContacts
   }
 }

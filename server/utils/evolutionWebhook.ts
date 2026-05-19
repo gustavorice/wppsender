@@ -430,19 +430,21 @@ async function persistSingleMessage(
   const message = parsed.message
   const supabase = getServerSupabase()
 
+  const contactPayload = {
+    clerk_org_id: account.clerk_org_id,
+    whatsapp_account_id: account.id,
+    wa_id: message.waId,
+    phone: message.phone,
+    // Only set name from inbound messages (pushName of the sender == contact).
+    // Outbound messages carry the OWN user's pushName ("Você"), which would
+    // wrongly overwrite the contact's real name on every reply.
+    ...(message.direction === 'inbound' && message.name ? { name: message.name } : {}),
+    updated_at: new Date().toISOString()
+  }
+
   const { data: contact, error: contactError } = await supabase
     .from('contacts')
-    .upsert(
-      {
-        clerk_org_id: account.clerk_org_id,
-        whatsapp_account_id: account.id,
-        wa_id: message.waId,
-        phone: message.phone,
-        name: message.name,
-        updated_at: new Date().toISOString()
-      },
-      { onConflict: 'clerk_org_id,whatsapp_account_id,wa_id' }
-    )
+    .upsert(contactPayload, { onConflict: 'clerk_org_id,whatsapp_account_id,wa_id' })
     .select('*')
     .single()
 

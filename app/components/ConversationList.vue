@@ -65,8 +65,18 @@ watch([search, whatsappAccountId], () => {
         :class="conversation.id === activeConversationId ? 'bg-emerald-50' : 'bg-white'"
         @click="emit('select', conversation.id)"
       >
-        <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-slate-100 text-sm font-semibold text-slate-700">
-          {{ (conversation.contact?.name || conversation.contact?.phone || '?').slice(0, 1).toUpperCase() }}
+        <div class="h-10 w-10 shrink-0 overflow-hidden rounded-md bg-slate-100">
+          <img
+            v-if="conversation.contact?.avatar_url"
+            :src="conversation.contact.avatar_url"
+            :alt="conversation.contact?.name || conversation.contact?.phone || ''"
+            class="h-full w-full object-cover"
+            loading="lazy"
+            @error="(e: Event) => { const target = e.target as HTMLImageElement; target.style.display = 'none' }"
+          />
+          <div v-else class="flex h-full w-full items-center justify-center text-sm font-semibold text-slate-700">
+            {{ (conversation.contact?.name || conversation.contact?.phone || '?').slice(0, 1).toUpperCase() }}
+          </div>
         </div>
         <div class="min-w-0 flex-1">
           <div class="flex items-center justify-between gap-2">

@@ -24,11 +24,26 @@ watch(
   <section class="flex min-h-[calc(100vh-120px)] flex-col bg-slate-50">
     <div class="border-b border-slate-200 bg-white px-4 py-3">
       <div v-if="conversation" class="flex items-center justify-between gap-3">
-        <div class="min-w-0">
-          <h2 class="truncate text-sm font-semibold text-slate-950">
-            {{ conversation.contact?.name || conversation.contact?.phone || 'Contato' }}
-          </h2>
-          <p class="truncate text-xs text-slate-500">{{ conversation.contact?.phone || conversation.contact?.wa_id }}</p>
+        <div class="flex min-w-0 items-center gap-3">
+          <div class="h-9 w-9 shrink-0 overflow-hidden rounded-md bg-slate-100">
+            <img
+              v-if="conversation.contact?.avatar_url"
+              :src="conversation.contact.avatar_url"
+              :alt="conversation.contact?.name || ''"
+              class="h-full w-full object-cover"
+              loading="lazy"
+              @error="(e: Event) => { const target = e.target as HTMLImageElement; target.style.display = 'none' }"
+            />
+            <div v-else class="flex h-full w-full items-center justify-center text-sm font-semibold text-slate-700">
+              {{ (conversation.contact?.name || conversation.contact?.phone || '?').slice(0, 1).toUpperCase() }}
+            </div>
+          </div>
+          <div class="min-w-0">
+            <h2 class="truncate text-sm font-semibold text-slate-950">
+              {{ conversation.contact?.name || conversation.contact?.phone || 'Contato' }}
+            </h2>
+            <p class="truncate text-xs text-slate-500">{{ conversation.contact?.phone || conversation.contact?.wa_id }}</p>
+          </div>
         </div>
         <UBadge variant="soft" color="success">{{ conversation.status }}</UBadge>
       </div>

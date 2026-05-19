@@ -10,9 +10,25 @@ const {
   reconnect,
   disconnect,
   simulateIncomingMessage,
+  syncContacts,
   accounts,
   loading
 } = useWhatsappAccounts()
+
+const syncedAccountIds = ref<Set<string>>(new Set())
+
+watch(
+  accounts,
+  (next) => {
+    for (const acc of next) {
+      if (acc.status === 'connected' && !syncedAccountIds.value.has(acc.id)) {
+        syncedAccountIds.value.add(acc.id)
+        void syncContacts(acc.id)
+      }
+    }
+  },
+  { deep: true }
+)
 
 useRealtimeConversations()
 
