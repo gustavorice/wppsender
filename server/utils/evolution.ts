@@ -154,17 +154,106 @@ export async function createInstance(instanceName: string): Promise<unknown> {
       instanceName,
       qrcode: false,
       integration: 'WHATSAPP-BAILEYS',
+      syncFullHistory: true,
       webhook: config.webhookUrl
         ? {
             url: config.webhookUrl,
             enabled: true,
             byEvents: false,
             base64: true,
-            events: ['APPLICATION_STARTUP', 'QRCODE_UPDATED', 'CONNECTION_UPDATE', 'MESSAGES_UPSERT', 'SEND_MESSAGE']
+            events: [
+              'APPLICATION_STARTUP',
+              'QRCODE_UPDATED',
+              'CONNECTION_UPDATE',
+              'MESSAGES_SET',
+              'MESSAGES_UPSERT',
+              'MESSAGES_UPDATE',
+              'SEND_MESSAGE',
+              'CHATS_SET',
+              'CHATS_UPSERT',
+              'CHATS_UPDATE',
+              'CONTACTS_SET',
+              'CONTACTS_UPSERT',
+              'CONTACTS_UPDATE'
+            ]
           }
         : undefined
     }
   })
+}
+
+export interface EvolutionContact {
+  jid: string
+  waId: string
+  phone: string
+  name: string | null
+  pushName: string | null
+  avatarUrl: string | null
+}
+
+function normalizeRawContact(record: any): EvolutionContact | null {
+  if (!record || typeof record !== 'object') {
+    return null
+  }
+
+  const jid =
+    pickString(record.id) ||
+    pickString(record.remoteJid) ||
+    pickString(record.jid) ||
+    pickString(record.contactId) ||
+    pickString(record._id)
+
+  if (!jid) {
+    return null
+  }
+
+  if (jid.includes('@g.us') || jid.includes('@broadcast') || jid === 'status@broadcast') {
+    return null
+  }
+
+  const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
+  if (!phone) {
+    return null
+  }
+
+  return {
+    jid,
+    waId: phone,
+    phone,
+    name: pickString(record.name) || pickString(record.verifiedName) || pickString(record.businessName) || pickString(record.notify),
+    pushName: pickString(record.pushName) || pickString(record.pushname),
+    avatarUrl: pickString(record.profilePicUrl) || pickString(record.avatarUrl) || pickString(record.imgUrl)
+  }
+}
+
+export async function fetchContacts(instanceName: string): Promise<EvolutionContact[]> {
+  const config = getEvolutionConfig()
+
+  if (config.isMock) {
+    return []
+  }
+
+  let raw: unknown
+  try {
+    raw = await evolutionFetch<unknown>(`/chat/findContacts/${encodeURIComponent(instanceName)}`, {
+      method: 'POST',
+      body: { where: {} }
+    })
+  } catch (postError) {
+    try {
+      raw = await evolutionFetch<unknown>(`/chat/findContacts/${encodeURIComponent(instanceName)}`, {
+        method: 'GET'
+      })
+    } catch (getError) {
+      throw postError
+    }
+  }
+
+  const list = Array.isArray(raw)
+    ? raw
+    : (raw as any)?.contacts || (raw as any)?.data || (raw as any)?.response?.contacts || []
+
+  return (list as any[]).map((item) => normalizeRawContact(item)).filter(Boolean) as EvolutionContact[]
 }
 
 export async function connectInstance(instanceName: string): Promise<EvolutionConnectResult> {

@@ -224,61 +224,211 @@ export function parseEvolutionWebhook(payload: EvolutionWebhookPayload): ParsedE
   }
 }
 
-export async function processEvolutionWebhook(payload: EvolutionWebhookPayload) {
-  const parsed = parseEvolutionWebhook(payload)
+interface WhatsAppAccountRow {
+  id: string
+  clerk_org_id: string
+  instance_name: string
+}
 
-  if (!parsed.instanceName) {
-    return {
-      ignored: true,
-      reason: 'missing_instance_name',
-      parsed
+function extractList(payload: Record<string, any>, ...keys: string[]): any[] {
+  const data = asRecord(payload.data)
+
+  for (const key of keys) {
+    if (Array.isArray(payload[key])) {
+      return payload[key]
     }
+    if (Array.isArray(data[key])) {
+      return data[key]
+    }
+  }
+
+  if (Array.isArray(payload.data)) {
+    return payload.data
+  }
+
+  return []
+}
+
+function normalizeContactRecord(record: any): { waId: string; phone: string; name: string | null; avatarUrl: string | null } | null {
+  if (!record || typeof record !== 'object') {
+    return null
+  }
+
+  const jid =
+    pickString(record.id, record.remoteJid, record.jid, record.contactId, record._id, record.key?.remoteJid)
+  if (!jid) {
+    return null
+  }
+  if (jid.includes('@g.us') || jid.includes('@broadcast')) {
+    return null
+  }
+
+  const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
+  if (!phone) {
+    return null
+  }
+
+  return {
+    waId: phone,
+    phone,
+    name: pickString(record.name, record.verifiedName, record.businessName, record.notify, record.pushName, record.pushname),
+    avatarUrl: pickString(record.profilePicUrl, record.avatarUrl, record.imgUrl, record.picture)
+  }
+}
+
+function normalizeChatRecord(record: any): { waId: string; phone: string; name: string | null; lastMessageAt: string | null } | null {
+  if (!record || typeof record !== 'object') {
+    return null
+  }
+
+  const jid = pickString(record.id, record.remoteJid, record.jid, record.chatId)
+  if (!jid) {
+    return null
+  }
+  if (jid.includes('@g.us') || jid.includes('@broadcast')) {
+    return null
+  }
+
+  const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
+  if (!phone) {
+    return null
+  }
+
+  const tsCandidate = record.conversationTimestamp || record.lastMessageRecvTimestamp || record.lastMessageTimestamp || record.t
+  const lastMessageAt = tsCandidate ? timestampToIso(tsCandidate) : null
+
+  return {
+    waId: phone,
+    phone,
+    name: pickString(record.name, record.subject, record.pushName, record.notify),
+    lastMessageAt
+  }
+}
+
+async function persistContactsBatch(
+  account: WhatsAppAccountRow,
+  records: any[]
+): Promise<{ inserted: number }> {
+  const normalized = records.map((r) => normalizeContactRecord(r)).filter(Boolean) as Array<{
+    waId: string
+    phone: string
+    name: string | null
+    avatarUrl: string | null
+  }>
+
+  if (normalized.length === 0) {
+    return { inserted: 0 }
+  }
+
+  const seen = new Set<string>()
+  const rows = normalized
+    .filter((item) => {
+      if (seen.has(item.waId)) return false
+      seen.add(item.waId)
+      return true
+    })
+    .map((item) => ({
+      clerk_org_id: account.clerk_org_id,
+      whatsapp_account_id: account.id,
+      wa_id: item.waId,
+      phone: item.phone,
+      name: item.name,
+      avatar_url: item.avatarUrl,
+      updated_at: new Date().toISOString()
+    }))
+
+  const supabase = getServerSupabase()
+  const { error } = await supabase
+    .from('contacts')
+    .upsert(rows, { onConflict: 'clerk_org_id,whatsapp_account_id,wa_id', ignoreDuplicates: false })
+
+  if (error) {
+    throw error
+  }
+
+  return { inserted: rows.length }
+}
+
+async function persistChatsBatch(
+  account: WhatsAppAccountRow,
+  records: any[]
+): Promise<{ conversations: number }> {
+  const normalized = records.map((r) => normalizeChatRecord(r)).filter(Boolean) as Array<{
+    waId: string
+    phone: string
+    name: string | null
+    lastMessageAt: string | null
+  }>
+
+  if (normalized.length === 0) {
+    return { conversations: 0 }
   }
 
   const supabase = getServerSupabase()
-  const { data: account, error: accountError } = await supabase
-    .from('whatsapp_accounts')
-    .select('*')
-    .eq('instance_name', parsed.instanceName)
-    .single()
+  const contactRows = normalized.map((item) => ({
+    clerk_org_id: account.clerk_org_id,
+    whatsapp_account_id: account.id,
+    wa_id: item.waId,
+    phone: item.phone,
+    name: item.name,
+    updated_at: new Date().toISOString()
+  }))
 
-  if (accountError || !account) {
-    return {
-      ignored: true,
-      reason: 'unknown_instance',
-      parsed
-    }
+  const { data: contacts, error: contactError } = await supabase
+    .from('contacts')
+    .upsert(contactRows, { onConflict: 'clerk_org_id,whatsapp_account_id,wa_id' })
+    .select('id, wa_id')
+
+  if (contactError) {
+    throw contactError
   }
 
-  if (parsed.connectionStatus || parsed.qrCode) {
-    const update: Record<string, unknown> = {}
+  const contactByWaId = new Map<string, string>()
+  for (const row of contacts || []) {
+    contactByWaId.set(row.wa_id as string, row.id as string)
+  }
 
-    if (parsed.connectionStatus) {
-      update.status = parsed.connectionStatus
-      if (parsed.connectionStatus === 'connected') {
-        update.last_connected_at = new Date().toISOString()
-        update.qr_code = null
+  const conversationRows = normalized.flatMap((item) => {
+    const contactId = contactByWaId.get(item.waId)
+    if (!contactId) return []
+    return [
+      {
+        clerk_org_id: account.clerk_org_id,
+        whatsapp_account_id: account.id,
+        contact_id: contactId,
+        status: 'open' as const,
+        last_message_at: item.lastMessageAt,
+        updated_at: new Date().toISOString()
       }
-    }
+    ]
+  })
 
-    if (parsed.qrCode) {
-      update.qr_code = parsed.qrCode
-      update.status = 'pending'
-    }
-
-    await supabase.from('whatsapp_accounts').update(update).eq('id', account.id)
+  if (conversationRows.length === 0) {
+    return { conversations: 0 }
   }
 
+  const { error: convError } = await supabase
+    .from('conversations')
+    .upsert(conversationRows, { onConflict: 'clerk_org_id,whatsapp_account_id,contact_id' })
+
+  if (convError) {
+    throw convError
+  }
+
+  return { conversations: conversationRows.length }
+}
+
+async function persistSingleMessage(
+  payload: EvolutionWebhookPayload,
+  account: WhatsAppAccountRow,
+  parsed: ParsedEvolutionEvent
+) {
   if (!parsed.message) {
-    return {
-      ok: true,
-      account_id: account.id,
-      event_type: parsed.eventType,
-      message_id: null
-    }
+    return { ok: true, account_id: account.id, event_type: parsed.eventType, message_id: null }
   }
 
   const message = parsed.message
+  const supabase = getServerSupabase()
 
   const { data: contact, error: contactError } = await supabase
     .from('contacts')
@@ -336,10 +486,7 @@ export async function processEvolutionWebhook(payload: EvolutionWebhookPayload) 
         raw_payload: payload as Record<string, unknown>,
         sent_at: message.sentAt
       },
-      {
-        onConflict: 'clerk_org_id,whatsapp_account_id,wa_message_id',
-        ignoreDuplicates: true
-      }
+      { onConflict: 'clerk_org_id,whatsapp_account_id,wa_message_id', ignoreDuplicates: true }
     )
     .select('*')
     .single()
@@ -360,9 +507,7 @@ export async function processEvolutionWebhook(payload: EvolutionWebhookPayload) 
 
   await supabase
     .from('conversations')
-    .update({
-      last_message_at: message.sentAt
-    })
+    .update({ last_message_at: message.sentAt })
     .eq('id', conversation.id)
     .eq('clerk_org_id', account.clerk_org_id)
 
@@ -379,5 +524,108 @@ export async function processEvolutionWebhook(payload: EvolutionWebhookPayload) 
     conversation_id: conversation.id,
     message_id: savedMessage?.id ?? null,
     event_type: parsed.eventType
+  }
+}
+
+async function persistMessagesBatch(
+  payload: EvolutionWebhookPayload,
+  account: WhatsAppAccountRow,
+  records: any[],
+  eventType: string
+): Promise<{ messages: number }> {
+  let persisted = 0
+
+  for (const record of records) {
+    const wrapped = { ...payload, event: eventType, data: record } as EvolutionWebhookPayload
+    const parsed = parseEvolutionWebhook(wrapped)
+    if (!parsed.message) {
+      continue
+    }
+    try {
+      await persistSingleMessage(wrapped, account, parsed)
+      persisted += 1
+    } catch (err) {
+      // skip and continue — batch import should not fail wholesale on a single bad record
+    }
+  }
+
+  return { messages: persisted }
+}
+
+export async function processEvolutionWebhook(payload: EvolutionWebhookPayload) {
+  const parsed = parseEvolutionWebhook(payload)
+
+  if (!parsed.instanceName) {
+    return {
+      ignored: true,
+      reason: 'missing_instance_name',
+      parsed
+    }
+  }
+
+  const supabase = getServerSupabase()
+  const { data: account, error: accountError } = await supabase
+    .from('whatsapp_accounts')
+    .select('*')
+    .eq('instance_name', parsed.instanceName)
+    .single()
+
+  if (accountError || !account) {
+    return {
+      ignored: true,
+      reason: 'unknown_instance',
+      parsed
+    }
+  }
+
+  if (parsed.connectionStatus || parsed.qrCode) {
+    const update: Record<string, unknown> = {}
+
+    if (parsed.connectionStatus) {
+      update.status = parsed.connectionStatus
+      if (parsed.connectionStatus === 'connected') {
+        update.last_connected_at = new Date().toISOString()
+        update.qr_code = null
+      }
+    }
+
+    if (parsed.qrCode) {
+      update.qr_code = parsed.qrCode
+      update.status = 'pending'
+    }
+
+    await supabase.from('whatsapp_accounts').update(update).eq('id', account.id)
+  }
+
+  const eventType = parsed.eventType
+  const record = asRecord(payload)
+
+  if (eventType === 'CONTACTS_SET' || eventType === 'CONTACTS_UPSERT' || eventType === 'CONTACTS_UPDATE') {
+    const list = extractList(record, 'contacts')
+    const result = await persistContactsBatch(account as WhatsAppAccountRow, list)
+    return { ok: true, account_id: account.id, event_type: eventType, ...result }
+  }
+
+  if (eventType === 'CHATS_SET' || eventType === 'CHATS_UPSERT' || eventType === 'CHATS_UPDATE') {
+    const list = extractList(record, 'chats')
+    const result = await persistChatsBatch(account as WhatsAppAccountRow, list)
+    return { ok: true, account_id: account.id, event_type: eventType, ...result }
+  }
+
+  if (eventType === 'MESSAGES_SET') {
+    const list = extractList(record, 'messages')
+    const result = await persistMessagesBatch(payload, account as WhatsAppAccountRow, list, eventType)
+    return { ok: true, account_id: account.id, event_type: eventType, ...result }
+  }
+
+  if (parsed.message) {
+    return persistSingleMessage(payload, account as WhatsAppAccountRow, parsed)
+  }
+
+  return {
+    ok: true,
+    account_id: account.id,
+    event_type: eventType,
+    message_id: null
   }
 }
