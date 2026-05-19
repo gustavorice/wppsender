@@ -1,0 +1,16 @@
+.nuxt
+.output
+.data
+node_modules
+dist
+.env
+.env.*
+!.env.example
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# clerk configuration (can include secrets)
+/.clerk/
