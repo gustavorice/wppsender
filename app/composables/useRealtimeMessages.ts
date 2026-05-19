@@ -7,6 +7,7 @@ export function useRealtimeMessages(conversationId: MaybeRefOrGetter<string | nu
   const nuxtApp = useNuxtApp()
   const messagesStore = useMessagesStore()
   const conversationsStore = useConversationsStore()
+  const instanceId = Math.random().toString(36).slice(2, 10)
   let channel: RealtimeChannel | null = null
 
   async function cleanup() {
@@ -26,7 +27,7 @@ export function useRealtimeMessages(conversationId: MaybeRefOrGetter<string | nu
       }
 
       channel = nuxtApp.$supabase
-        .channel(`messages:${id}`)
+        .channel(`messages:${id}:${instanceId}`)
         .on(
           'postgres_changes',
           {

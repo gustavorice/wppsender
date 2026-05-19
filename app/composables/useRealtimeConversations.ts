@@ -8,6 +8,7 @@ export function useRealtimeConversations() {
   const conversationsStore = useConversationsStore()
   const accountsStore = useWhatsappAccountsStore()
   const { organizationId } = useCurrentOrganization()
+  const instanceId = Math.random().toString(36).slice(2, 10)
   let conversationsChannel: RealtimeChannel | null = null
   let accountsChannel: RealtimeChannel | null = null
 
@@ -33,7 +34,7 @@ export function useRealtimeConversations() {
       }
 
       conversationsChannel = nuxtApp.$supabase
-        .channel(`conversations:${orgId}`)
+        .channel(`conversations:${orgId}:${instanceId}`)
         .on(
           'postgres_changes',
           {
@@ -49,7 +50,7 @@ export function useRealtimeConversations() {
         .subscribe()
 
       accountsChannel = nuxtApp.$supabase
-        .channel(`whatsapp-accounts:${orgId}`)
+        .channel(`whatsapp-accounts:${orgId}:${instanceId}`)
         .on(
           'postgres_changes',
           {

@@ -22,9 +22,26 @@ const roleOptions = [
   { label: 'Member', value: 'org:member' }
 ]
 
+const membersError = ref<string | null>(null)
+const membersLoading = ref(false)
+
 async function fetchMembers() {
-  const response = await $fetch<{ data: Member[] }>('/api/team/members')
-  members.value = response.data
+  membersLoading.value = true
+  membersError.value = null
+  try {
+    const response = await $fetch<{ data: Member[] }>('/api/team/members')
+    members.value = response.data
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Falha ao carregar membros.'
+    membersError.value = message
+    toast.add({
+      title: 'Nao foi possivel carregar membros',
+      description: message,
+      color: 'error'
+    })
+  } finally {
+    membersLoading.value = false
+  }
 }
 
 async function invite() {
@@ -60,6 +77,11 @@ onMounted(fetchMembers)
       <div class="border-b border-slate-200 p-4">
         <h2 class="text-sm font-semibold text-slate-950">Membros</h2>
       </div>
+      <div v-if="membersError" class="m-4 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+        {{ membersError }}
+      </div>
+      <div v-else-if="membersLoading" class="p-4 text-sm text-slate-500">Carregando membros...</div>
+      <div v-else-if="members.length === 0" class="p-4 text-sm text-slate-500">Nenhum membro encontrado nesta organizacao ainda.</div>
       <div class="divide-y divide-slate-100">
         <div v-for="member in members" :key="member.id" class="flex items-center justify-between gap-4 p-4">
           <div class="min-w-0">

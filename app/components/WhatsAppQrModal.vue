@@ -14,6 +14,7 @@ const emit = defineEmits<{
 }>()
 
 const qrImage = ref('')
+let pollTimer: ReturnType<typeof setInterval> | null = null
 
 function formatQrCode(value: string) {
   if (value.startsWith('data:image')) {
@@ -39,7 +40,52 @@ async function renderQr() {
   qrImage.value = image || (await QRCode.toDataURL(raw, { width: 280, margin: 2 }))
 }
 
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+function startPolling() {
+  stopPolling()
+  pollTimer = setInterval(() => {
+    if (!props.account?.id) return
+    if (props.account.status === 'connected') {
+      stopPolling()
+      return
+    }
+    if (!props.account.qr_code) {
+      emit('retry', props.account.id)
+    }
+  }, 4000)
+}
+
 watch(() => props.account?.qr_code, renderQr, { immediate: true })
+
+watch(
+  () => [props.open, props.account?.status, props.account?.qr_code] as const,
+  ([isOpen, status, qr]) => {
+    if (!isOpen) {
+      stopPolling()
+      return
+    }
+    if (status === 'connected') {
+      stopPolling()
+      return
+    }
+    if (!qr) {
+      startPolling()
+    } else {
+      stopPolling()
+    }
+  },
+  { immediate: true }
+)
+
+onScopeDispose(() => {
+  stopPolling()
+})
 </script>
 
 <template>
@@ -60,7 +106,10 @@ watch(() => props.account?.qr_code, renderQr, { immediate: true })
             <UIcon name="i-lucide-check-circle-2" class="mx-auto h-10 w-10 text-emerald-600" />
             <p class="mt-3 text-sm font-medium text-slate-900">Numero conectado</p>
           </div>
-          <LoadingState v-else label="Gerando QR Code" />
+          <div v-else class="text-center">
+            <LoadingState label="Gerando QR Code" />
+            <p class="mt-3 text-xs text-slate-500">A Evolution API leva alguns segundos para responder.</p>
+          </div>
         </div>
 
         <div class="mt-5 flex items-center justify-between gap-3">
