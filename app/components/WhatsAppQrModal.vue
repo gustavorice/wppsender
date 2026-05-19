@@ -15,6 +15,7 @@ const emit = defineEmits<{
 
 const qrImage = ref('')
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let autoCloseTimer: ReturnType<typeof setTimeout> | null = null
 
 function formatQrCode(value: string) {
   if (value.startsWith('data:image')) {
@@ -83,8 +84,32 @@ watch(
   { immediate: true }
 )
 
+watch(
+  () => props.account?.status,
+  (newStatus, oldStatus) => {
+    if (newStatus === 'connected' && oldStatus !== 'connected' && props.open) {
+      if (autoCloseTimer) clearTimeout(autoCloseTimer)
+      autoCloseTimer = setTimeout(() => {
+        emit('close')
+        autoCloseTimer = null
+      }, 1500)
+    }
+  }
+)
+
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (!isOpen && autoCloseTimer) {
+      clearTimeout(autoCloseTimer)
+      autoCloseTimer = null
+    }
+  }
+)
+
 onScopeDispose(() => {
   stopPolling()
+  if (autoCloseTimer) clearTimeout(autoCloseTimer)
 })
 </script>
 
