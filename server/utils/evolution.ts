@@ -208,14 +208,17 @@ function normalizeRawContact(record: any): EvolutionContact | null {
     return null
   }
 
+  // Evolution v2.3 also returns CUIDs as `id` here. We require a JID — a
+  // string with "@" — and prefer fields that semantically hold the JID.
   const jid =
-    pickString(record.id) ||
     pickString(record.remoteJid) ||
     pickString(record.jid) ||
+    pickString(record.whatsappJid) ||
+    pickString(record.id) ||
     pickString(record.contactId) ||
     pickString(record._id)
 
-  if (!jid) {
+  if (!jid || !jid.includes('@')) {
     return null
   }
 
@@ -233,7 +236,7 @@ function normalizeRawContact(record: any): EvolutionContact | null {
   }
 
   const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
-  if (!phone || phone.length < 8 || phone.length > 15) {
+  if (!phone || phone.length < 10 || phone.length > 13) {
     return null
   }
 
@@ -335,8 +338,12 @@ export async function fetchChats(instanceName: string): Promise<EvolutionChat[]>
   const list = Array.isArray(raw) ? raw : (raw as any)?.chats || (raw as any)?.data || []
   const out: EvolutionChat[] = []
   for (const item of list as any[]) {
-    const jid = pickString(item?.remoteJid) || pickString(item?.id) || pickString(item?.jid)
-    if (!jid) continue
+    // CRITICAL: Evolution v2.3 returns its DB primary key as `id` (a CUID
+    // like "cmpd63ciq00jus54cmhnstzwt"). Never fall back to `id` — only the
+    // explicit JID fields contain a real WhatsApp identifier, and a valid
+    // JID MUST contain "@" (e.g. "5519...@s.whatsapp.net").
+    const jid = pickString(item?.remoteJid) || pickString(item?.jid) || pickString(item?.whatsappJid)
+    if (!jid || !jid.includes('@')) continue
     if (jid.includes('@g.us') || jid.includes('@broadcast') || jid.includes('@lid') || jid.includes('@newsletter')) continue
     const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
     if (!phone || phone.length < 10 || phone.length > 13) continue

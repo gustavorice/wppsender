@@ -121,14 +121,17 @@ function normalizePhone(value: string): string {
   return value.replace(/@.+$/, '').replace(/\D/g, '')
 }
 
-// WhatsApp Business uses @lid identifiers (Linked Device IDs) that masquerade
-// as phone numbers but are virtual — they show up alongside the real
-// @s.whatsapp.net JID and would create duplicate "shadow" contacts. Detect
-// and reject anything that isn't a real WhatsApp user JID.
+// A real WhatsApp JID looks like "5519998151694@s.whatsapp.net".
+// Reject everything else — including:
+//   - @lid (WhatsApp Business virtual IDs)
+//   - @g.us, @broadcast, @newsletter, @bot
+//   - Strings without "@" at all (Evolution sometimes emits its DB primary
+//     key, a CUID like "cmpd63ciq00jus54cmhnstzwt", in fields where we
+//     would expect a JID — never accept those.)
 function isAcceptableJid(rawJid: string | null | undefined): boolean {
   if (!rawJid) return false
   const trimmed = rawJid.trim()
-  if (!trimmed) return false
+  if (!trimmed || !trimmed.includes('@')) return false
   if (trimmed.includes('@g.us') || trimmed.includes('@broadcast') || trimmed === 'status@broadcast') {
     return false
   }
@@ -139,11 +142,12 @@ function isAcceptableJid(rawJid: string | null | undefined): boolean {
 }
 
 // Final safety: even with a clean JID, the resulting phone digits should look
-// like a real phone (E.164 is 8-15 digits). LIDs that slip through tend to
-// produce numbers outside that range.
+// like a real international phone number. Tightening to 10-13 covers BR
+// (12-13), US/CA (11), Mexico (12-13), Portugal (13), etc — and rejects the
+// short fragments LIDs and CUIDs tend to produce.
 function isAcceptablePhone(phone: string): boolean {
   if (!phone) return false
-  return phone.length >= 8 && phone.length <= 15
+  return phone.length >= 10 && phone.length <= 13
 }
 
 // Evolution / WhatsApp Web fall back to the raw phone number as pushName /
