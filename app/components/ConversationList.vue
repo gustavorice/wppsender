@@ -90,7 +90,7 @@ watch([search, whatsappAccountId], () => {
         <div class="min-w-0 flex-1">
           <div class="flex items-center justify-between gap-2">
             <p class="truncate text-sm font-semibold text-slate-950">
-              {{ conversation.contact?.name || formatPhone(conversation.contact?.phone || conversation.contact?.wa_id) || 'Contato' }}
+              {{ conversation.contact?.name || formatPhone(conversation.contact?.phone || conversation.contact?.wa_id) || 'Sem cadastro' }}
             </p>
             <span class="shrink-0 text-[11px] text-slate-500">
               {{ conversation.last_message_at ? new Date(conversation.last_message_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '' }}

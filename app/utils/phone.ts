@@ -1,3 +1,26 @@
+// A wa_id is a "LID" — WhatsApp Business virtual identifier — when it does
+// not match a real international phone pattern. We use country code prefix
+// + length as the heuristic since LIDs have neither.
+export function isLidWaId(waId?: string | null): boolean {
+  if (!waId) return false
+  const digits = waId.replace(/\D/g, '')
+  if (!digits) return true
+  // Brazil
+  if (digits.startsWith('55') && (digits.length === 12 || digits.length === 13)) return false
+  // US/Canada
+  if (digits.startsWith('1') && digits.length === 11) return false
+  // Other common: 10-13 digits + plausible country code
+  if (digits.length >= 10 && digits.length <= 13) {
+    const cc2 = digits.slice(0, 2)
+    const cc3 = digits.slice(0, 3)
+    // Heuristic: accept a short list of country codes we expect to see
+    const valid2 = ['44', '49', '33', '34', '39', '31', '52', '54', '57', '58', '56', '51', '53', '61', '64', '82', '81', '86']
+    const valid3 = ['351', '353', '358']
+    if (valid2.includes(cc2) || valid3.includes(cc3)) return false
+  }
+  return true
+}
+
 export function formatPhone(raw?: string | null): string {
   if (!raw) return ''
   const digits = raw.replace(/\D/g, '')
@@ -16,10 +39,19 @@ export function formatPhone(raw?: string | null): string {
     return `+1 (${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`
   }
 
-  // Generic E.164 fallback
-  if (digits.length >= 10 && digits.length <= 15) {
+  // LID or unknown — return empty so the UI shows a placeholder instead
+  // of garbage like "+213283915231476" pretending to be a phone number.
+  if (isLidWaId(raw)) return ''
+
+  // Generic E.164 fallback for legitimate international numbers
+  if (digits.length >= 10 && digits.length <= 13) {
     return `+${digits}`
   }
 
   return raw
+}
+
+export function phoneLabel(raw?: string | null, fallback = 'WhatsApp'): string {
+  const formatted = formatPhone(raw)
+  return formatted || fallback
 }

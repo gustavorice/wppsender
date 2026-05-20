@@ -288,6 +288,15 @@ function parseMessage(payload: Record<string, any>): ParsedEvolutionMessage | nu
   const fromMe = Boolean(key.fromMe ?? record.fromMe ?? record.message?.fromMe)
   const content = detectMessageBody(record)
 
+  // For @lid messages: refuse to persist if it's outbound AND the contact
+  // didn't exist before. Outbound-only @lid events create pure-noise
+  // entries (no name, no avatar, no counter-party identity). The contact
+  // will be created later if the person actually replies inbound.
+  const isLidJid = remoteJid.includes('@lid')
+  if (isLidJid && fromMe) {
+    (payload as any).__skipNewLidContact = true
+  }
+
   return {
     waMessageId,
     direction: fromMe ? 'outbound' : 'inbound',
@@ -516,6 +525,22 @@ async function persistSingleMessage(
 
   const message = parsed.message
   const supabase = getServerSupabase()
+
+  // For outbound-only @lid messages with no existing contact, skip creating
+  // a new "ghost" contact (the destination LID has no useful identity yet).
+  const skipNewLid = Boolean((payload as any).__skipNewLidContact)
+  if (skipNewLid) {
+    const { data: existing } = await supabase
+      .from('contacts')
+      .select('id')
+      .eq('clerk_org_id', account.clerk_org_id)
+      .eq('whatsapp_account_id', account.id)
+      .eq('wa_id', message.waId)
+      .maybeSingle()
+    if (!existing) {
+      return { ok: true, account_id: account.id, event_type: parsed.eventType, message_id: null, skipped: 'lid-outbound-no-prior' }
+    }
+  }
 
   const contactPayload = {
     clerk_org_id: account.clerk_org_id,

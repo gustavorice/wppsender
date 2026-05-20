@@ -41,9 +41,11 @@ watch(
           </div>
           <div class="min-w-0">
             <h2 class="truncate text-sm font-semibold text-slate-950">
-              {{ conversation.contact?.name || formatPhone(conversation.contact?.phone || conversation.contact?.wa_id) || 'Contato' }}
+              {{ conversation.contact?.name || formatPhone(conversation.contact?.phone || conversation.contact?.wa_id) || 'Sem cadastro' }}
             </h2>
-            <p class="truncate text-xs text-slate-500">{{ formatPhone(conversation.contact?.phone || conversation.contact?.wa_id) }}</p>
+            <p class="truncate text-xs text-slate-500">
+              {{ formatPhone(conversation.contact?.phone || conversation.contact?.wa_id) || 'WhatsApp Business' }}
+            </p>
           </div>
         </div>
         <UBadge variant="soft" color="success">{{ conversation.status }}</UBadge>

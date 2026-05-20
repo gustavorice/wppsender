@@ -9,6 +9,8 @@ const props = defineProps<{
 const waLink = computed(() => {
   const phone = props.conversation?.contact?.phone || props.conversation?.contact?.wa_id
   if (!phone) return null
+  // Don't generate wa.me links for LID identifiers — they would 404
+  if (!formatPhone(phone)) return null
   return `https://wa.me/${phone.replace(/\D/g, '')}`
 })
 
@@ -43,9 +45,11 @@ const lastSeen = computed(() => {
           </div>
         </div>
         <h3 class="mt-3 truncate text-base font-semibold text-slate-950">
-          {{ conversation.contact?.name || formatPhone(conversation.contact?.phone) || 'Sem nome' }}
+          {{ conversation.contact?.name || formatPhone(conversation.contact?.phone) || 'Sem cadastro' }}
         </h3>
-        <p class="mt-0.5 text-xs text-slate-500">{{ formatPhone(conversation.contact?.phone) }}</p>
+        <p class="mt-0.5 text-xs text-slate-500">
+          {{ formatPhone(conversation.contact?.phone) || 'WhatsApp Business (sem nº direto)' }}
+        </p>
         <a
           v-if="waLink"
           :href="waLink"
