@@ -442,20 +442,17 @@ export async function fetchMessagesFromHistory(
   const out: EvolutionHistoryMessage[] = []
   for (const record of records as any[]) {
     const key = record?.key || {}
-    // WhatsApp Business stores chats under @lid identifiers but ships the
-    // real @s.whatsapp.net JID in key.remoteJidAlt. Prefer that when we have
-    // it; fall back to the search input only as last resort. Never store
-    // @lid as the contact JID — those are not real phone numbers.
     const altJid = pickString(key.remoteJidAlt)
     const primaryJid = pickString(key.remoteJid)
     let jid: string | null = null
     if (altJid && altJid.includes('@s.whatsapp.net')) jid = altJid
     else if (primaryJid && primaryJid.includes('@s.whatsapp.net')) jid = primaryJid
-    else if (remoteJid.includes('@s.whatsapp.net')) jid = remoteJid
+    else if (primaryJid && primaryJid.includes('@lid')) jid = primaryJid
+    else if (remoteJid.includes('@s.whatsapp.net') || remoteJid.includes('@lid')) jid = remoteJid
     if (!jid) continue
-    if (jid.includes('@g.us') || jid.includes('@broadcast') || jid.includes('@lid')) continue
+    if (jid.includes('@g.us') || jid.includes('@broadcast') || jid.includes('@newsletter')) continue
     const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
-    if (!phone || phone.length < 10 || phone.length > 13) continue
+    if (!phone || phone.length < 5 || phone.length > 18) continue
 
     const waMessageId = pickString(key.id) || pickString(record?.messageId) || `histo_${phone}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
     const fromMe = Boolean(key.fromMe)
@@ -511,13 +508,17 @@ export async function fetchAllMessages(instanceName: string, maxPages = 20): Pro
       const key = record?.key || {}
       const altJid = pickString(key.remoteJidAlt)
       const primaryJid = pickString(key.remoteJid)
+      // Prefer real @s.whatsapp.net JIDs. Accept @lid as fallback so we
+      // don't lose entire chats — most Business chats live exclusively
+      // under @lid and we'd otherwise discard 100% of history.
       let jid: string | null = null
       if (altJid && altJid.includes('@s.whatsapp.net')) jid = altJid
       else if (primaryJid && primaryJid.includes('@s.whatsapp.net')) jid = primaryJid
+      else if (primaryJid && primaryJid.includes('@lid')) jid = primaryJid
       if (!jid) continue
-      if (jid.includes('@g.us') || jid.includes('@broadcast') || jid.includes('@lid')) continue
+      if (jid.includes('@g.us') || jid.includes('@broadcast') || jid.includes('@newsletter')) continue
       const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
-      if (!phone || phone.length < 10 || phone.length > 13) continue
+      if (!phone || phone.length < 5 || phone.length > 18) continue
 
       const waMessageId = pickString(key.id) || pickString(record?.messageId) || `histo_${phone}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
       const fromMe = Boolean(key.fromMe)
@@ -526,13 +527,16 @@ export async function fetchAllMessages(instanceName: string, maxPages = 20): Pro
         ? new Date(typeof ts === 'number' ? (ts > 9999999999 ? ts : ts * 1000) : Date.parse(String(ts))).toISOString()
         : new Date().toISOString()
       const classified = classifyMessage(record)
+      const rawPush = firstString(record?.pushName, record?.notifyName)
+      // Treat the LID-as-pushName fallback ("58317535740100") as no name
+      const pushName = rawPush && rawPush !== phone ? cleanName(rawPush, phone) : null
 
       out.push({
         waMessageId,
         fromMe,
         remoteJid: jid,
         phone,
-        pushName: cleanName(firstString(record?.pushName, record?.notifyName), phone),
+        pushName,
         body: classified.body,
         mediaUrl: classified.mediaUrl,
         type: classified.type,

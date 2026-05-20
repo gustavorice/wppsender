@@ -6,10 +6,12 @@ const props = defineProps<{
   contacts: Contact[]
   accounts: WhatsAppAccount[]
   loading?: boolean
+  openingId?: string | null
 }>()
 
 const emit = defineEmits<{
   filter: [payload: { search: string; whatsappAccountId: string | null }]
+  openContact: [contactId: string]
 }>()
 
 const search = ref('')
@@ -61,8 +63,31 @@ watch([search, whatsappAccountId], () => {
           </tr>
         </thead>
         <tbody class="divide-y divide-slate-100 bg-white">
-          <tr v-for="contact in contacts" :key="contact.id" class="hover:bg-slate-50">
-            <td class="px-4 py-3 font-medium text-slate-950">{{ contact.name || formatPhone(contact.phone || contact.wa_id) || 'Sem nome' }}</td>
+          <tr
+            v-for="contact in contacts"
+            :key="contact.id"
+            class="cursor-pointer transition hover:bg-emerald-50"
+            :class="openingId === contact.id ? 'opacity-50' : ''"
+            @click="emit('openContact', contact.id)"
+          >
+            <td class="px-4 py-3 font-medium text-slate-950">
+              <div class="flex items-center gap-3">
+                <div class="h-7 w-7 shrink-0 overflow-hidden rounded-full bg-slate-100">
+                  <img
+                    v-if="contact.avatar_url"
+                    :src="contact.avatar_url"
+                    :alt="contact.name || ''"
+                    class="h-full w-full object-cover"
+                    loading="lazy"
+                    @error="(e: Event) => { const target = e.target as HTMLImageElement; target.style.display = 'none' }"
+                  />
+                  <div v-else class="flex h-full w-full items-center justify-center text-[10px] font-semibold text-slate-600">
+                    {{ (contact.name || '?').slice(0, 1).toUpperCase() }}
+                  </div>
+                </div>
+                <span>{{ contact.name || formatPhone(contact.phone || contact.wa_id) || 'Sem nome' }}</span>
+              </div>
+            </td>
             <td class="px-4 py-3 text-slate-600">{{ formatPhone(contact.phone || contact.wa_id) }}</td>
             <td class="px-4 py-3 text-slate-600">{{ accountName(contact.whatsapp_account_id) }}</td>
             <td class="px-4 py-3">

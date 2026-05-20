@@ -236,9 +236,8 @@ function parseMessage(payload: Record<string, any>): ParsedEvolutionMessage | nu
   }
 
   const key = asRecord(record.key || record.message?.key)
-  // WhatsApp Business sends @lid for chats but exposes the real
-  // @s.whatsapp.net JID via key.remoteJidAlt. Prefer the alt so contacts
-  // get stored under their real phone number.
+  // Prefer real @s.whatsapp.net JIDs from remoteJidAlt; fall back to
+  // @lid when nothing else exists so Business chats still flow through.
   const altJid = pickString(key.remoteJidAlt)
   const primaryJid = pickString(key.remoteJid, record.remoteJid, record.chatId, record.from, record.number, record.sender)
   let remoteJid: string | null = null
@@ -246,26 +245,22 @@ function parseMessage(payload: Record<string, any>): ParsedEvolutionMessage | nu
     remoteJid = altJid
   } else if (primaryJid && primaryJid.includes('@s.whatsapp.net')) {
     remoteJid = primaryJid
-  } else if (primaryJid && !primaryJid.includes('@lid')) {
-    // Allow non-@lid JIDs from non-business clients (raw @s.whatsapp.net was
-    // already handled above; this catches odd formats from mocks/tests).
+  } else if (primaryJid && primaryJid.includes('@lid')) {
+    remoteJid = primaryJid
+  } else if (primaryJid) {
     remoteJid = primaryJid
   }
 
-  // Reject @lid / @broadcast / @g.us early — these create shadow contacts.
-  if (remoteJid && !isAcceptableJid(remoteJid)) {
+  if (!remoteJid) {
+    return null
+  }
+  // Reject group, broadcast, newsletter — but allow @lid through.
+  if (remoteJid.includes('@g.us') || remoteJid.includes('@broadcast') || remoteJid.includes('@newsletter') || remoteJid.includes('@bot')) {
     return null
   }
 
-  // If we still don't have a real JID but only @lid was given, skip the
-  // message entirely. We refuse to fabricate a phone number from a LID.
-  if (!remoteJid && primaryJid && primaryJid.includes('@lid')) {
-    return null
-  }
-
-  const phone = remoteJid ? normalizePhone(remoteJid) : normalizePhone(pickString(record.phone, record.participant) || '')
-
-  if (!phone || !isAcceptablePhone(phone)) {
+  const phone = normalizePhone(remoteJid)
+  if (!phone || phone.length < 5 || phone.length > 18) {
     return null
   }
 

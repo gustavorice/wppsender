@@ -1,14 +1,9 @@
 <script setup lang="ts">
-import type { Contact, Conversation, WhatsAppAccount } from '~~/types/entities'
+import type { Conversation, WhatsAppAccount } from '~~/types/entities'
 import { formatPhone } from '~/utils/phone'
-
-type ContactStub = Contact & {
-  whatsapp_account?: Pick<WhatsAppAccount, 'id' | 'display_name' | 'phone_number' | 'status'> | null
-}
 
 const props = defineProps<{
   conversations: Conversation[]
-  orphanContacts: ContactStub[]
   accounts: WhatsAppAccount[]
   activeConversationId?: string | null
   loading?: boolean
@@ -16,7 +11,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   select: [conversationId: string]
-  selectContact: [contactId: string]
   filter: [payload: { search: string; whatsappAccountId: string | null }]
 }>()
 
@@ -57,11 +51,11 @@ watch([search, whatsappAccountId], () => {
 
     <LoadingState v-if="loading" label="Carregando conversas" />
     <EmptyState
-      v-else-if="conversations.length === 0 && (!search || orphanContacts.length === 0)"
+      v-else-if="conversations.length === 0"
       class="m-3"
       icon="i-lucide-message-circle"
       title="Sem conversas"
-      description="As mensagens recebidas aparecem aqui em tempo real. Use a busca acima para encontrar contatos."
+      description="As mensagens recebidas aparecem aqui. Inicie uma conversa clicando num contato na aba Contatos."
     />
 
     <div v-else class="min-h-0 flex-1 overflow-y-auto">
@@ -103,44 +97,6 @@ watch([search, whatsappAccountId], () => {
         </div>
       </button>
 
-      <div
-        v-if="search && orphanContacts.length > 0"
-        class="sticky top-0 z-10 border-b border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500"
-      >
-        Contatos sem conversa ({{ orphanContacts.length }})
-      </div>
-
-      <button
-        v-for="contact in (search ? orphanContacts : [])"
-        :key="`contact-${contact.id}`"
-        class="flex w-full items-start gap-3 border-b border-slate-100 px-3 py-3 text-left transition hover:bg-slate-50"
-        @click="emit('selectContact', contact.id)"
-      >
-        <div class="h-10 w-10 shrink-0 overflow-hidden rounded-md bg-slate-100">
-          <img
-            v-if="contact.avatar_url"
-            :src="contact.avatar_url"
-            :alt="contact.name || contact.phone || ''"
-            class="h-full w-full object-cover"
-            loading="lazy"
-            @error="(e: Event) => { const target = e.target as HTMLImageElement; target.style.display = 'none' }"
-          />
-          <div v-else class="flex h-full w-full items-center justify-center text-sm font-semibold text-slate-700">
-            {{ (contact.name || contact.phone || '?').slice(0, 1).toUpperCase() }}
-          </div>
-        </div>
-        <div class="min-w-0 flex-1">
-          <p class="truncate text-sm font-medium text-slate-900">
-            {{ contact.name || formatPhone(contact.phone || contact.wa_id) || 'Sem nome' }}
-          </p>
-          <p class="mt-1 truncate text-xs text-slate-500">
-            {{ formatPhone(contact.phone || contact.wa_id) }}
-          </p>
-          <p class="mt-1 truncate text-[11px] text-slate-400">
-            {{ contact.whatsapp_account?.display_name || contact.whatsapp_account?.phone_number || 'WhatsApp' }}
-          </p>
-        </div>
-      </button>
     </div>
   </section>
 </template>
