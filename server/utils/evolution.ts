@@ -371,6 +371,101 @@ export async function fetchChats(instanceName: string): Promise<EvolutionChat[]>
   return out
 }
 
+export interface EvolutionHistoryMessage {
+  waMessageId: string
+  fromMe: boolean
+  remoteJid: string
+  phone: string
+  pushName: string | null
+  body: string | null
+  mediaUrl: string | null
+  type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'unknown'
+  sentAt: string
+  raw: any
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const v of values) {
+    if (typeof v === 'string' && v.trim().length > 0) return v.trim()
+  }
+  return null
+}
+
+function classifyMessage(record: any): { type: EvolutionHistoryMessage['type']; body: string | null; mediaUrl: string | null } {
+  const message = record?.message || {}
+  const body = firstString(
+    record?.text,
+    record?.body,
+    message?.conversation,
+    message?.extendedTextMessage?.text,
+    message?.imageMessage?.caption,
+    message?.videoMessage?.caption
+  )
+  const mediaUrl = firstString(record?.mediaUrl, message?.imageMessage?.url, message?.videoMessage?.url, message?.audioMessage?.url, message?.documentMessage?.url)
+  if (message?.imageMessage) return { type: 'image', body, mediaUrl }
+  if (message?.audioMessage) return { type: 'audio', body, mediaUrl }
+  if (message?.videoMessage) return { type: 'video', body, mediaUrl }
+  if (message?.documentMessage) return { type: 'document', body, mediaUrl }
+  if (body) return { type: 'text', body, mediaUrl }
+  return { type: 'unknown', body, mediaUrl }
+}
+
+export async function fetchMessagesFromHistory(
+  instanceName: string,
+  remoteJid: string,
+  limit = 100
+): Promise<EvolutionHistoryMessage[]> {
+  const config = getEvolutionConfig()
+  if (config.isMock) return []
+
+  let raw: any
+  try {
+    raw = await evolutionFetch<any>(`/chat/findMessages/${encodeURIComponent(instanceName)}`, {
+      method: 'POST',
+      body: {
+        where: { key: { remoteJid } },
+        limit
+      }
+    })
+  } catch {
+    return []
+  }
+
+  const records = raw?.messages?.records || raw?.records || (Array.isArray(raw) ? raw : [])
+  const out: EvolutionHistoryMessage[] = []
+  for (const record of records as any[]) {
+    const key = record?.key || {}
+    const jid = pickString(key.remoteJid) || remoteJid
+    if (!jid || jid.includes('@lid') || jid.includes('@g.us') || jid.includes('@broadcast')) continue
+    const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
+    if (!phone || phone.length < 10 || phone.length > 13) continue
+
+    const waMessageId = pickString(key.id) || pickString(record?.messageId) || `histo_${phone}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
+    const fromMe = Boolean(key.fromMe)
+    const ts = record?.messageTimestamp || record?.timestamp || record?.date
+    const sentAt = ts
+      ? new Date(typeof ts === 'number' ? (ts > 9999999999 ? ts : ts * 1000) : Date.parse(String(ts))).toISOString()
+      : new Date().toISOString()
+    const classified = classifyMessage(record)
+
+    out.push({
+      waMessageId,
+      fromMe,
+      remoteJid: jid,
+      phone,
+      pushName: cleanName(firstString(record?.pushName, record?.notifyName), phone),
+      body: classified.body,
+      mediaUrl: classified.mediaUrl,
+      type: classified.type,
+      sentAt,
+      raw: record
+    })
+  }
+  // Oldest first so the UI can scroll bottom-up naturally
+  out.sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime())
+  return out
+}
+
 export async function fetchContacts(instanceName: string): Promise<EvolutionContact[]> {
   const config = getEvolutionConfig()
 

@@ -11,10 +11,20 @@ const {
   activeConversationId,
   loading
 } = useConversations()
-const { fetchMessages, messagesForConversation, store: messagesStore } = useMessages()
+const { fetchMessages, messagesForConversation, store: messagesStore, startPolling } = useMessages()
 
 useRealtimeConversations()
 useRealtimeMessages(activeConversationId)
+
+// Belt + suspenders: re-fetch active conversation every 5s as a fallback
+// for the case where Supabase Realtime is delayed or misconfigured. The
+// closure reads activeConversationId at tick time, so changing conversation
+// just changes what we poll — no need to tear the timer down.
+const stopPolling = startPolling(
+  { get value() { return activeConversationId.value } } as unknown as { value: string | null | undefined },
+  5000
+)
+onUnmounted(() => stopPolling())
 
 const toast = useToast()
 const activeMessages = computed(() => messagesForConversation(activeConversationId.value).value)
