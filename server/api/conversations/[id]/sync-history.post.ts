@@ -15,19 +15,20 @@ export default defineEventHandler(async (event) => {
 
     const supabase = getServerSupabase()
 
-    const { data: conversation, error: convErr } = await supabase
+    const { data: convData, error: convErr } = await supabase
       .from('conversations')
       .select('*, contact:contacts(*), whatsapp_account:whatsapp_accounts(*)')
       .eq('id', conversationId)
       .eq('clerk_org_id', tenant.orgId)
       .single()
 
-    if (convErr || !conversation) {
+    if (convErr || !convData) {
       throw apiError(404, 'Conversa nao encontrada.')
     }
 
-    const account = (conversation as any).whatsapp_account
-    const contact = (conversation as any).contact
+    const conversation = convData as any
+    const account = conversation.whatsapp_account
+    const contact = conversation.contact
 
     if (!account || !contact) {
       throw apiError(409, 'Conversa sem conta ou contato vinculado.')
@@ -47,9 +48,9 @@ export default defineEventHandler(async (event) => {
 
     const rows = history.map((m) => ({
       clerk_org_id: tenant.orgId,
-      whatsapp_account_id: account.id,
-      conversation_id: conversation.id,
-      contact_id: contact.id,
+      whatsapp_account_id: account.id as string,
+      conversation_id: conversation.id as string,
+      contact_id: contact.id as string,
       wa_message_id: m.waMessageId,
       direction: m.fromMe ? ('outbound' as const) : ('inbound' as const),
       type: m.type,
@@ -71,11 +72,12 @@ export default defineEventHandler(async (event) => {
     }
 
     // Update last_message_at to the most recent
-    const lastSentAt = history[history.length - 1].sentAt
+    const last = history[history.length - 1]
+    const lastSentAt = last ? last.sentAt : new Date().toISOString()
     await supabase
       .from('conversations')
       .update({ last_message_at: lastSentAt })
-      .eq('id', conversation.id)
+      .eq('id', conversation.id as string)
       .eq('clerk_org_id', tenant.orgId)
 
     return { data: { synced: history.length, last_message_at: lastSentAt } }
