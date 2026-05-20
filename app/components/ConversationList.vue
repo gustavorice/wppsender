@@ -33,7 +33,7 @@ watch([search, whatsappAccountId], () => {
 </script>
 
 <template>
-  <section class="flex min-h-[calc(100vh-120px)] flex-col border-r border-slate-200 bg-white">
+  <section class="flex h-full min-h-0 flex-col border-r border-slate-200 bg-white">
     <div class="border-b border-slate-200 p-3">
       <div class="flex items-center gap-2">
         <UInput v-model="search" icon="i-lucide-search" placeholder="Buscar contato" class="w-full" />

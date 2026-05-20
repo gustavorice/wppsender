@@ -7,14 +7,19 @@ interface Member {
     firstName?: string | null
     lastName?: string | null
     imageUrl?: string | null
+    user_id?: string | null
+    userId?: string | null
   } | null
 }
+
+const { userId: currentUserId } = useCurrentOrganization()
 
 const toast = useToast()
 const loading = ref(false)
 const members = ref<Member[]>([])
 const email = ref('')
 const role = ref<'org:admin' | 'org:agent' | 'org:member'>('org:agent')
+const updatingMemberId = ref<string | null>(null)
 
 const roleOptions = [
   { label: 'Admin', value: 'org:admin' },
@@ -24,6 +29,18 @@ const roleOptions = [
 
 const membersError = ref<string | null>(null)
 const membersLoading = ref(false)
+
+function memberUserId(m: Member): string | null {
+  return (m.publicUserData?.user_id || m.publicUserData?.userId) ?? null
+}
+
+function memberLabel(m: Member): string {
+  return (
+    m.publicUserData?.identifier ||
+    `${m.publicUserData?.firstName || ''} ${m.publicUserData?.lastName || ''}`.trim() ||
+    'Membro'
+  )
+}
 
 async function fetchMembers() {
   membersLoading.value = true
@@ -68,6 +85,48 @@ async function invite() {
   }
 }
 
+async function changeRole(member: Member, newRole: string) {
+  const uid = memberUserId(member)
+  if (!uid || member.role === newRole) return
+  updatingMemberId.value = member.id
+  try {
+    await ($fetch as any)(`/api/team/members/${uid}`, {
+      method: 'PATCH',
+      body: { role: newRole }
+    })
+    toast.add({ title: `Role atualizada para ${newRole}`, color: 'success' })
+    await fetchMembers()
+  } catch (error) {
+    toast.add({
+      title: 'Falha ao atualizar role',
+      description: error instanceof Error ? error.message : 'Tente novamente.',
+      color: 'error'
+    })
+  } finally {
+    updatingMemberId.value = null
+  }
+}
+
+async function removeMember(member: Member) {
+  const uid = memberUserId(member)
+  if (!uid) return
+  if (!window.confirm(`Remover ${memberLabel(member)} desta organizacao?`)) return
+  updatingMemberId.value = member.id
+  try {
+    await ($fetch as any)(`/api/team/members/${uid}`, { method: 'DELETE' })
+    toast.add({ title: 'Membro removido', color: 'success' })
+    await fetchMembers()
+  } catch (error) {
+    toast.add({
+      title: 'Falha ao remover',
+      description: error instanceof Error ? error.message : 'Tente novamente.',
+      color: 'error'
+    })
+  } finally {
+    updatingMemberId.value = null
+  }
+}
+
 onMounted(fetchMembers)
 </script>
 
@@ -83,14 +142,47 @@ onMounted(fetchMembers)
       <div v-else-if="membersLoading" class="p-4 text-sm text-slate-500">Carregando membros...</div>
       <div v-else-if="members.length === 0" class="p-4 text-sm text-slate-500">Nenhum membro encontrado nesta organizacao ainda.</div>
       <div class="divide-y divide-slate-100">
-        <div v-for="member in members" :key="member.id" class="flex items-center justify-between gap-4 p-4">
-          <div class="min-w-0">
-            <p class="truncate text-sm font-medium text-slate-950">
-              {{ member.publicUserData?.identifier || `${member.publicUserData?.firstName || ''} ${member.publicUserData?.lastName || ''}`.trim() || 'Membro' }}
-            </p>
-            <p class="text-xs text-slate-500">{{ member.id }}</p>
+        <div v-for="member in members" :key="member.id" class="flex items-center justify-between gap-3 p-4">
+          <div class="flex min-w-0 items-center gap-3">
+            <div class="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-slate-200">
+              <img
+                v-if="member.publicUserData?.imageUrl"
+                :src="member.publicUserData.imageUrl"
+                :alt="memberLabel(member)"
+                class="h-full w-full object-cover"
+                loading="lazy"
+                @error="(e: Event) => { const target = e.target as HTMLImageElement; target.style.display = 'none' }"
+              />
+            </div>
+            <div class="min-w-0">
+              <p class="truncate text-sm font-medium text-slate-950">
+                {{ memberLabel(member) }}
+                <span v-if="memberUserId(member) === currentUserId" class="ml-1 text-xs font-normal text-slate-500">(você)</span>
+              </p>
+              <p class="truncate text-xs text-slate-500">{{ memberUserId(member) || member.id }}</p>
+            </div>
           </div>
-          <UBadge color="neutral" variant="soft">{{ member.role }}</UBadge>
+          <div class="flex shrink-0 items-center gap-2">
+            <select
+              :value="member.role"
+              :disabled="updatingMemberId === member.id || memberUserId(member) === currentUserId"
+              class="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 disabled:cursor-not-allowed disabled:bg-slate-50"
+              @change="(e: Event) => changeRole(member, (e.target as HTMLSelectElement).value)"
+            >
+              <option v-for="option in roleOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              <option v-if="member.role === 'org:owner'" value="org:owner">Owner</option>
+            </select>
+            <UButton
+              v-if="memberUserId(member) !== currentUserId"
+              icon="i-lucide-trash-2"
+              size="xs"
+              color="error"
+              variant="ghost"
+              :loading="updatingMemberId === member.id"
+              aria-label="Remover membro"
+              @click="removeMember(member)"
+            />
+          </div>
         </div>
       </div>
     </div>

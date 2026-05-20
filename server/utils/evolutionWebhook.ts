@@ -120,6 +120,28 @@ function normalizePhone(value: string): string {
   return value.replace(/@.+$/, '').replace(/\D/g, '')
 }
 
+// Evolution / WhatsApp Web fall back to the raw phone number as pushName /
+// chat name when the contact has no profile name. That's never a useful
+// display name — it just shadows the phone we already store. Detect and
+// reject these so the UI can show the real phone (with formatting) or
+// the contact name later, but never `"132942122721378"` as a name.
+function isFakeNameForPhone(name: string | null | undefined, phone: string): boolean {
+  if (!name) return true
+  const digits = name.replace(/\D/g, '')
+  if (!digits) return false
+  return digits === phone || digits.startsWith(phone) || phone.startsWith(digits)
+}
+
+function cleanContactName(name: string | null | undefined, phone: string): string | null {
+  if (!name) return null
+  const trimmed = name.trim()
+  if (!trimmed) return null
+  if (isFakeNameForPhone(trimmed, phone)) return null
+  // Strip a known sentinel that some Baileys versions emit
+  if (trimmed.toLowerCase() === 'voce' || trimmed === 'Você') return null
+  return trimmed
+}
+
 function timestampToIso(value: unknown): string {
   if (typeof value === 'number') {
     const milliseconds = value > 9999999999 ? value : value * 1000
@@ -203,7 +225,7 @@ function parseMessage(payload: Record<string, any>): ParsedEvolutionMessage | nu
     direction: fromMe ? 'outbound' : 'inbound',
     waId: phone,
     phone,
-    name: pickString(record.pushName, record.name, record.senderName, record.notifyName),
+    name: cleanContactName(pickString(record.pushName, record.name, record.senderName, record.notifyName), phone),
     type: content.type,
     body: content.body,
     mediaUrl: content.mediaUrl,
@@ -271,7 +293,10 @@ function normalizeContactRecord(record: any): { waId: string; phone: string; nam
   return {
     waId: phone,
     phone,
-    name: pickString(record.name, record.verifiedName, record.businessName, record.notify, record.pushName, record.pushname),
+    name: cleanContactName(
+      pickString(record.name, record.verifiedName, record.businessName, record.notify, record.pushName, record.pushname),
+      phone
+    ),
     avatarUrl: pickString(record.profilePicUrl, record.avatarUrl, record.imgUrl, record.picture)
   }
 }
@@ -300,7 +325,7 @@ function normalizeChatRecord(record: any): { waId: string; phone: string; name: 
   return {
     waId: phone,
     phone,
-    name: pickString(record.name, record.subject, record.pushName, record.notify),
+    name: cleanContactName(pickString(record.name, record.subject, record.pushName, record.notify), phone),
     lastMessageAt
   }
 }

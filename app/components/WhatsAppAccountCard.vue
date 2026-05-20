@@ -10,8 +10,14 @@ const props = defineProps<{
 const emit = defineEmits<{
   connect: [id: string]
   disconnect: [id: string]
+  remove: [id: string]
   simulate: [id: string]
 }>()
+
+function confirmRemove() {
+  const ok = window.confirm(`Remover o numero "${props.account.display_name || props.account.instance_name}" definitivamente? A instancia Evolution sera deletada e as conversas vinculadas serao perdidas.`)
+  if (ok) emit('remove', props.account.id)
+}
 
 const statusMap = computed(() => {
   const map = {
@@ -58,6 +64,15 @@ const statusMap = computed(() => {
         >
           Desconectar
         </UButton>
+        <UButton
+          v-if="canManage"
+          icon="i-lucide-trash-2"
+          size="sm"
+          color="error"
+          variant="ghost"
+          aria-label="Remover"
+          @click="confirmRemove"
+        />
       </div>
     </div>
 

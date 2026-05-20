@@ -21,7 +21,7 @@ watch(
 </script>
 
 <template>
-  <section class="flex min-h-[calc(100vh-120px)] flex-col bg-slate-50">
+  <section class="flex h-full min-h-0 flex-col bg-slate-50">
     <div class="border-b border-slate-200 bg-white px-4 py-3">
       <div v-if="conversation" class="flex items-center justify-between gap-3">
         <div class="flex min-w-0 items-center gap-3">

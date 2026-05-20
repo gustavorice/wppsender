@@ -191,6 +191,18 @@ export interface EvolutionContact {
   avatarUrl: string | null
 }
 
+function cleanName(name: string | null, phone: string): string | null {
+  if (!name) return null
+  const trimmed = name.trim()
+  if (!trimmed) return null
+  if (trimmed.toLowerCase() === 'voce' || trimmed === 'Você') return null
+  const digits = trimmed.replace(/\D/g, '')
+  if (digits && (digits === phone || digits.startsWith(phone) || phone.startsWith(digits))) {
+    return null
+  }
+  return trimmed
+}
+
 function normalizeRawContact(record: any): EvolutionContact | null {
   if (!record || typeof record !== 'object') {
     return null
@@ -216,12 +228,15 @@ function normalizeRawContact(record: any): EvolutionContact | null {
     return null
   }
 
+  const rawName = pickString(record.name) || pickString(record.verifiedName) || pickString(record.businessName) || pickString(record.notify)
+  const rawPush = pickString(record.pushName) || pickString(record.pushname)
+
   return {
     jid,
     waId: phone,
     phone,
-    name: pickString(record.name) || pickString(record.verifiedName) || pickString(record.businessName) || pickString(record.notify),
-    pushName: pickString(record.pushName) || pickString(record.pushname),
+    name: cleanName(rawName, phone),
+    pushName: cleanName(rawPush, phone),
     avatarUrl: pickString(record.profilePicUrl) || pickString(record.avatarUrl) || pickString(record.imgUrl)
   }
 }

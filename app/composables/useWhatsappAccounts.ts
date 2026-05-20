@@ -39,6 +39,24 @@ export function useWhatsappAccounts() {
     return response.data
   }
 
+  async function removeAccount(id: string) {
+    try {
+      await $fetch('/api/whatsapp/remove', {
+        method: 'POST',
+        body: { id }
+      })
+      store.accounts = store.accounts.filter((a) => a.id !== id)
+      toast.add({ title: 'Numero removido', color: 'success' })
+    } catch (error) {
+      toast.add({
+        title: 'Falha ao remover',
+        description: error instanceof Error ? error.message : 'Tente novamente.',
+        color: 'error'
+      })
+      throw error
+    }
+  }
+
   async function disconnect(id: string) {
     const response = await $fetch<ApiItemResponse<WhatsAppAccount>>('/api/whatsapp/disconnect', {
       method: 'POST',
@@ -101,6 +119,7 @@ export function useWhatsappAccounts() {
     createInstance,
     reconnect,
     disconnect,
+    removeAccount,
     simulateIncomingMessage,
     syncContacts
   }

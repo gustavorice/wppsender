@@ -9,6 +9,7 @@ const {
   createInstance,
   reconnect,
   disconnect,
+  removeAccount,
   simulateIncomingMessage,
   syncContacts,
   accounts,
@@ -70,6 +71,11 @@ async function disconnectAccount(id: string) {
   await disconnect(id)
 }
 
+async function removeAccountAction(id: string) {
+  syncedAccountIds.value.delete(id)
+  await removeAccount(id)
+}
+
 async function simulate(accountId: string) {
   await simulateIncomingMessage(accountId)
   await navigateTo('/messages')
@@ -110,6 +116,7 @@ onMounted(fetchAccounts)
         :mock="showDevTools"
         @connect="retryConnect"
         @disconnect="disconnectAccount"
+        @remove="removeAccountAction"
         @simulate="simulate"
       />
     </div>
