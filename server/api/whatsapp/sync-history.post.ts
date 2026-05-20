@@ -33,6 +33,18 @@ export default defineEventHandler(async (event) => {
       throw apiError(409, 'Conecte o numero antes de sincronizar o historico.')
     }
 
+    // Throttle: don't re-run history sync more than once every 5 minutes.
+    // Stops the visible flicker that happens when the auto-sync fires
+    // on every /settings/whatsapp visit and shuffles the contact list.
+    const force = Boolean((event.context.query as any)?.force)
+    const lastSyncIso = account.last_history_synced_at as string | null
+    if (!force && lastSyncIso) {
+      const ageMs = Date.now() - new Date(lastSyncIso).getTime()
+      if (ageMs >= 0 && ageMs < 5 * 60 * 1000) {
+        return { data: { synced: 0, reason: 'throttled', last_synced_at: lastSyncIso } }
+      }
+    }
+
     const messages = await fetchAllMessages(account.instance_name, 30)
 
     if (messages.length === 0) {
@@ -68,23 +80,35 @@ export default defineEventHandler(async (event) => {
       )
     }
 
-    // 2. Upsert contacts
-    const contactRows = Array.from(byPhone.entries()).map(([phone, msgs]) => {
-      // Find a non-fromMe pushName (the contact's name); falls back to null.
-      const inboundPush = msgs.find((m) => !m.fromMe)?.pushName || null
-      const enriched = enrichResults.get(phone)
-      const name = enriched?.name || inboundPush
-      const avatarUrl = enriched?.avatarUrl || null
-      return {
-        clerk_org_id: tenant.orgId,
-        whatsapp_account_id: account.id,
-        wa_id: phone,
-        phone,
-        name,
-        avatar_url: avatarUrl,
-        updated_at: new Date().toISOString()
-      }
-    })
+    // 2. Build contact rows.
+    // Rule: For LID phones (not BR-like 12-13 with 55 prefix), only create
+    // the contact if we managed to fetch SOMETHING (name OR avatar). That
+    // prevents "+213283915231476" rows with zero usable info.
+    const isBrazilian = (p: string) => p.startsWith('55') && p.length >= 12 && p.length <= 13
+    const contactRows = Array.from(byPhone.entries())
+      .flatMap(([phone, msgs]) => {
+        const inboundPush = msgs.find((m) => !m.fromMe)?.pushName || null
+        const enriched = enrichResults.get(phone)
+        const name = enriched?.name || inboundPush
+        const avatarUrl = enriched?.avatarUrl || null
+        const isLid = isLidByPhone.get(phone) === true
+        if (isLid && !isBrazilian(phone) && !name && !avatarUrl) {
+          // Pure LID with zero metadata — skip. Avoids creating ghost
+          // contacts that show up as raw numbers in the inbox.
+          return []
+        }
+        return [
+          {
+            clerk_org_id: tenant.orgId,
+            whatsapp_account_id: account.id,
+            wa_id: phone,
+            phone,
+            name,
+            avatar_url: avatarUrl,
+            updated_at: new Date().toISOString()
+          }
+        ]
+      })
 
     const { error: contactErr } = await supabase
       .from('contacts')
@@ -201,7 +225,19 @@ export default defineEventHandler(async (event) => {
       }
     }
 
+    // Also index by avatar_url so identical photos count as the same person.
+    const realByAvatar = new Map<string, { id: string; wa_id: string; avatar_url: string | null }>()
+    for (const c of allContacts || []) {
+      if (!c.avatar_url) continue
+      const len = (c.wa_id as string).length
+      const isReal = len >= 10 && len <= 13 && (c.wa_id as string).startsWith('55')
+      if (isReal && !realByAvatar.has(c.avatar_url as string)) {
+        realByAvatar.set(c.avatar_url as string, { id: c.id as string, wa_id: c.wa_id as string, avatar_url: c.avatar_url as string })
+      }
+    }
+
     let merged = 0
+    // First pass: merge LID -> real by name
     for (const [key, lids] of lidByName.entries()) {
       const real = realByName.get(key)
       if (!real) continue
@@ -266,6 +302,75 @@ export default defineEventHandler(async (event) => {
         merged += 1
       }
     }
+
+    // Second pass: merge any leftover LID -> real by avatar_url match
+    const { data: remainingContacts } = await supabase
+      .from('contacts')
+      .select('id, wa_id, name, avatar_url')
+      .eq('clerk_org_id', tenant.orgId)
+      .eq('whatsapp_account_id', account.id as string)
+
+    for (const c of remainingContacts || []) {
+      const len = (c.wa_id as string).length
+      const isReal = len >= 10 && len <= 13 && (c.wa_id as string).startsWith('55')
+      if (isReal) continue
+      if (!c.avatar_url) continue
+      const realMatch = realByAvatar.get(c.avatar_url as string)
+      if (!realMatch || realMatch.id === c.id) continue
+
+      // Move conversations and messages from this LID contact to the real one
+      const { data: lidConvs } = await supabase
+        .from('conversations')
+        .select('id')
+        .eq('clerk_org_id', tenant.orgId)
+        .eq('whatsapp_account_id', account.id as string)
+        .eq('contact_id', c.id as string)
+
+      const { data: realConv } = await supabase
+        .from('conversations')
+        .select('id')
+        .eq('clerk_org_id', tenant.orgId)
+        .eq('whatsapp_account_id', account.id as string)
+        .eq('contact_id', realMatch.id)
+        .maybeSingle()
+
+      let realConvId = realConv?.id ?? null
+      if (!realConvId && lidConvs && lidConvs.length > 0) {
+        const { data: created } = await supabase
+          .from('conversations')
+          .insert({
+            clerk_org_id: tenant.orgId,
+            whatsapp_account_id: account.id as string,
+            contact_id: realMatch.id,
+            status: 'open'
+          })
+          .select('id')
+          .single()
+        realConvId = created?.id ?? null
+      }
+
+      if (realConvId) {
+        for (const lc of lidConvs || []) {
+          await supabase
+            .from('messages')
+            .update({ conversation_id: realConvId, contact_id: realMatch.id })
+            .eq('clerk_org_id', tenant.orgId)
+            .eq('conversation_id', lc.id as string)
+        }
+      }
+      for (const lc of lidConvs || []) {
+        await supabase.from('conversations').delete().eq('id', lc.id as string).eq('clerk_org_id', tenant.orgId)
+      }
+      await supabase.from('contacts').delete().eq('id', c.id as string).eq('clerk_org_id', tenant.orgId)
+      merged += 1
+    }
+
+    // Persist throttle marker
+    await supabase
+      .from('whatsapp_accounts')
+      .update({ last_history_synced_at: new Date().toISOString() })
+      .eq('id', account.id as string)
+      .eq('clerk_org_id', tenant.orgId)
 
     return {
       data: {
