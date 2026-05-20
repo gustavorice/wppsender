@@ -533,20 +533,62 @@ async function persistSingleMessage(
   const message = parsed.message
   const supabase = getServerSupabase()
 
-  // For outbound-only @lid messages with no existing contact, skip creating
-  // a new "ghost" contact (the destination LID has no useful identity yet).
+  // === LID → BR resolution ===
+  // If the incoming wa_id is a LID identifier and we have it mapped to a
+  // real BR contact (via contacts.lid_alt populated by deep-merge or by a
+  // prior remoteJidAlt), redirect the message to the real contact instead
+  // of creating a duplicate LID-only row.
+  let resolvedWaId = message.waId
+  let resolvedPhone = message.phone
+  if (message.waId && !(message.waId.startsWith('55') && message.waId.length >= 12)) {
+    const { data: lidMatch } = await supabase
+      .from('contacts')
+      .select('wa_id, phone')
+      .eq('clerk_org_id', account.clerk_org_id)
+      .eq('whatsapp_account_id', account.id)
+      .eq('lid_alt', message.waId)
+      .maybeSingle()
+    if (lidMatch?.wa_id) {
+      resolvedWaId = lidMatch.wa_id as string
+      resolvedPhone = (lidMatch.phone as string) || resolvedWaId
+    }
+  }
+
+  // For outbound-only @lid messages with no resolution AND no prior contact,
+  // skip creating a "ghost" row.
   const skipNewLid = Boolean((payload as any).__skipNewLidContact)
-  if (skipNewLid) {
+  if (skipNewLid && resolvedWaId === message.waId) {
     const { data: existing } = await supabase
       .from('contacts')
       .select('id')
       .eq('clerk_org_id', account.clerk_org_id)
       .eq('whatsapp_account_id', account.id)
-      .eq('wa_id', message.waId)
+      .eq('wa_id', resolvedWaId)
       .maybeSingle()
     if (!existing) {
       return { ok: true, account_id: account.id, event_type: parsed.eventType, message_id: null, skipped: 'lid-outbound-no-prior' }
     }
+  }
+
+  // Replace message identity with resolved one so the rest of the function
+  // writes everything to the real contact's conversation.
+  message.waId = resolvedWaId
+  message.phone = resolvedPhone
+
+  // Learn LID↔phone associations when the webhook gives us both. This is
+  // the cleanest way to keep the mapping fresh: every time a message
+  // contains BOTH the real JID and the original @lid, we save the LID on
+  // the real contact's row.
+  let learnedLidAlt: string | null = null
+  try {
+    const rawKey = ((payload as any)?.data?.key || {}) as Record<string, unknown>
+    const rawRemote = String(rawKey.remoteJid || '')
+    const rawAlt = String(rawKey.remoteJidAlt || '')
+    if (rawRemote.endsWith('@lid') && rawAlt.endsWith('@s.whatsapp.net')) {
+      learnedLidAlt = rawRemote.replace('@lid', '').replace(/\D/g, '') || null
+    }
+  } catch {
+    /* ignore */
   }
 
   // Only set push_name from inbound messages — outbound pushName is "Você"
@@ -559,6 +601,7 @@ async function persistSingleMessage(
     wa_id: message.waId,
     phone: message.phone,
     ...(message.direction === 'inbound' && message.name ? { push_name: message.name } : {}),
+    ...(learnedLidAlt ? { lid_alt: learnedLidAlt } : {}),
     updated_at: new Date().toISOString()
   }
 
