@@ -250,6 +250,120 @@ function normalizeRawContact(record: any): EvolutionContact | null {
   }
 }
 
+export interface EvolutionContactProfile {
+  name: string | null
+  avatarUrl: string | null
+}
+
+// Quick per-contact lookup used to enrich a contact on first inbound message,
+// so the UI gets the real name + profile picture without waiting for the next
+// CONTACTS_SET batch. Runs with a tight timeout so the webhook response stays
+// fast even when Evolution lags.
+export async function fetchContactProfile(instanceName: string, phone: string, timeoutMs = 2500): Promise<EvolutionContactProfile> {
+  const config = getEvolutionConfig()
+  if (config.isMock || !phone) {
+    return { name: null, avatarUrl: null }
+  }
+
+  const ac = new AbortController()
+  const timer = setTimeout(() => ac.abort(), timeoutMs)
+
+  async function tryNumbers(): Promise<string | null> {
+    try {
+      const res = await fetch(`${config.apiUrl}/chat/whatsappNumbers/${encodeURIComponent(instanceName)}`, {
+        method: 'POST',
+        headers: { apikey: config.apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ numbers: [phone] }),
+        signal: ac.signal
+      })
+      if (!res.ok) return null
+      const arr = (await res.json()) as Array<{ name?: string }>
+      const candidate = arr?.[0]?.name?.trim()
+      if (!candidate) return null
+      const digits = candidate.replace(/\D/g, '')
+      if (digits && (digits === phone || digits.startsWith(phone) || phone.startsWith(digits))) return null
+      if (candidate.toLowerCase() === 'voce' || candidate === 'Você') return null
+      return candidate
+    } catch {
+      return null
+    }
+  }
+
+  async function tryPicture(): Promise<string | null> {
+    try {
+      const res = await fetch(`${config.apiUrl}/chat/fetchProfilePictureUrl/${encodeURIComponent(instanceName)}`, {
+        method: 'POST',
+        headers: { apikey: config.apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ number: phone }),
+        signal: ac.signal
+      })
+      if (!res.ok) return null
+      const data = (await res.json()) as { profilePictureUrl?: string }
+      return data?.profilePictureUrl?.trim() || null
+    } catch {
+      return null
+    }
+  }
+
+  const [name, avatarUrl] = await Promise.all([tryNumbers(), tryPicture()])
+  clearTimeout(timer)
+  return { name, avatarUrl }
+}
+
+export interface EvolutionChat {
+  jid: string
+  waId: string
+  phone: string
+  name: string | null
+  lastMessageAt: string | null
+}
+
+export async function fetchChats(instanceName: string): Promise<EvolutionChat[]> {
+  const config = getEvolutionConfig()
+  if (config.isMock) return []
+
+  let raw: unknown
+  try {
+    raw = await evolutionFetch<unknown>(`/chat/findChats/${encodeURIComponent(instanceName)}`, {
+      method: 'POST',
+      body: { where: {} }
+    })
+  } catch {
+    return []
+  }
+
+  const list = Array.isArray(raw) ? raw : (raw as any)?.chats || (raw as any)?.data || []
+  const out: EvolutionChat[] = []
+  for (const item of list as any[]) {
+    const jid = pickString(item?.remoteJid) || pickString(item?.id) || pickString(item?.jid)
+    if (!jid) continue
+    if (jid.includes('@g.us') || jid.includes('@broadcast') || jid.includes('@lid') || jid.includes('@newsletter')) continue
+    const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
+    if (!phone || phone.length < 10 || phone.length > 13) continue
+
+    const rawName = pickString(item?.name) || pickString(item?.subject) || pickString(item?.pushName)
+    const tsCandidate = item?.conversationTimestamp || item?.lastMessageRecvTimestamp || item?.lastMessageTimestamp || item?.updatedAt
+    let lastMessageAt: string | null = null
+    if (tsCandidate) {
+      const ts = typeof tsCandidate === 'number'
+        ? (tsCandidate > 9999999999 ? tsCandidate : tsCandidate * 1000)
+        : Date.parse(String(tsCandidate))
+      if (Number.isFinite(ts)) {
+        lastMessageAt = new Date(ts).toISOString()
+      }
+    }
+
+    out.push({
+      jid,
+      waId: phone,
+      phone,
+      name: cleanName(rawName, phone),
+      lastMessageAt
+    })
+  }
+  return out
+}
+
 export async function fetchContacts(instanceName: string): Promise<EvolutionContact[]> {
   const config = getEvolutionConfig()
 

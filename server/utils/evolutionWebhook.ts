@@ -1,5 +1,6 @@
 import type { MessageType, EvolutionWebhookPayload } from '~~/types/entities'
 import { getServerSupabase } from './supabase'
+import { fetchContactProfile } from './evolution'
 
 interface ParsedEvolutionEvent {
   instanceName: string | null
@@ -500,6 +501,30 @@ async function persistSingleMessage(
 
   if (contactError || !contact) {
     throw contactError
+  }
+
+  // Enrich contact in-band when it's still missing name / avatar — gives the
+  // UI an instant picture+name on the very first message instead of waiting
+  // for the next CONTACTS_SET batch (which only fires on initial sync).
+  if ((!contact.name || !contact.avatar_url) && message.direction === 'inbound') {
+    const profile = await fetchContactProfile(account.instance_name, message.phone, 2500).catch(() => null)
+    if (profile && (profile.name || profile.avatarUrl)) {
+      const enrich: Record<string, unknown> = { updated_at: new Date().toISOString() }
+      if (profile.name && !contact.name) enrich.name = profile.name
+      if (profile.avatarUrl && !contact.avatar_url) enrich.avatar_url = profile.avatarUrl
+      if (Object.keys(enrich).length > 1) {
+        const { data: enriched } = await supabase
+          .from('contacts')
+          .update(enrich)
+          .eq('id', contact.id)
+          .eq('clerk_org_id', account.clerk_org_id)
+          .select('*')
+          .single()
+        if (enriched) {
+          Object.assign(contact, enriched)
+        }
+      }
+    }
   }
 
   const { data: conversation, error: conversationError } = await supabase

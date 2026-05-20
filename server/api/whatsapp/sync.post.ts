@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { getServerSupabase } from '~~/server/utils/supabase'
 import { requireOrgAdmin } from '~~/server/utils/auth'
-import { fetchContacts } from '~~/server/utils/evolution'
+import { fetchContacts, fetchChats } from '~~/server/utils/evolution'
 import { normalizeError } from '~~/server/utils/errors'
 import { rateLimit } from '~~/server/utils/rateLimit'
 
@@ -32,17 +32,17 @@ export default defineEventHandler(async (event) => {
       throw createError({ statusCode: 409, statusMessage: 'Conecte o numero antes de sincronizar contatos.' })
     }
 
-    const evolutionContacts = await fetchContacts(account.instance_name)
+    const [evolutionContacts, evolutionChats] = await Promise.all([
+      fetchContacts(account.instance_name).catch(() => []),
+      fetchChats(account.instance_name).catch(() => [])
+    ])
 
-    if (evolutionContacts.length === 0) {
-      return { data: { synced: 0, account_id: account.id } }
-    }
-
-    const seen = new Set<string>()
-    const rows = evolutionContacts
+    // 1. Upsert contacts
+    const contactSeen = new Set<string>()
+    const contactRows = evolutionContacts
       .filter((contact) => {
-        if (seen.has(contact.waId)) return false
-        seen.add(contact.waId)
+        if (contactSeen.has(contact.waId)) return false
+        contactSeen.add(contact.waId)
         return true
       })
       .map((contact) => ({
@@ -55,22 +55,84 @@ export default defineEventHandler(async (event) => {
         updated_at: new Date().toISOString()
       }))
 
+    let savedContacts = 0
     const chunkSize = 500
-    let saved = 0
-    for (let i = 0; i < rows.length; i += chunkSize) {
-      const chunk = rows.slice(i, i + chunkSize)
+    for (let i = 0; i < contactRows.length; i += chunkSize) {
+      const chunk = contactRows.slice(i, i + chunkSize)
       const { error: upsertError } = await supabase
         .from('contacts')
         .upsert(chunk, { onConflict: 'clerk_org_id,whatsapp_account_id,wa_id' })
-
-      if (upsertError) {
-        throw upsertError
-      }
-
-      saved += chunk.length
+      if (upsertError) throw upsertError
+      savedContacts += chunk.length
     }
 
-    return { data: { synced: saved, account_id: account.id } }
+    // 2. Upsert conversations from chats (so the inbox lights up with chats
+    // that have history but no recent activity yet)
+    let savedConversations = 0
+    if (evolutionChats.length > 0) {
+      // Need contact ids: re-select after upsert
+      const waIds = Array.from(new Set(evolutionChats.map((c) => c.waId)))
+      // Ensure contact row exists for each chat too (chats may include people
+      // not in findContacts result)
+      const chatContactRows = evolutionChats
+        .filter((chat) => !contactSeen.has(chat.waId))
+        .map((chat) => ({
+          clerk_org_id: account.clerk_org_id,
+          whatsapp_account_id: account.id,
+          wa_id: chat.waId,
+          phone: chat.phone,
+          name: chat.name,
+          updated_at: new Date().toISOString()
+        }))
+      if (chatContactRows.length > 0) {
+        await supabase
+          .from('contacts')
+          .upsert(chatContactRows, { onConflict: 'clerk_org_id,whatsapp_account_id,wa_id' })
+      }
+
+      const { data: contactsForChats } = await supabase
+        .from('contacts')
+        .select('id, wa_id')
+        .eq('clerk_org_id', account.clerk_org_id)
+        .eq('whatsapp_account_id', account.id)
+        .in('wa_id', waIds)
+
+      const byWaId = new Map<string, string>()
+      for (const row of contactsForChats || []) {
+        byWaId.set(row.wa_id as string, row.id as string)
+      }
+
+      const convRows = evolutionChats.flatMap((chat) => {
+        const cid = byWaId.get(chat.waId)
+        if (!cid) return []
+        return [
+          {
+            clerk_org_id: account.clerk_org_id,
+            whatsapp_account_id: account.id,
+            contact_id: cid,
+            status: 'open' as const,
+            last_message_at: chat.lastMessageAt,
+            updated_at: new Date().toISOString()
+          }
+        ]
+      })
+
+      if (convRows.length > 0) {
+        const { error: convError } = await supabase
+          .from('conversations')
+          .upsert(convRows, { onConflict: 'clerk_org_id,whatsapp_account_id,contact_id' })
+        if (convError) throw convError
+        savedConversations = convRows.length
+      }
+    }
+
+    return {
+      data: {
+        synced: savedContacts,
+        chats: savedConversations,
+        account_id: account.id
+      }
+    }
   } catch (error) {
     throw normalizeError(error)
   }
