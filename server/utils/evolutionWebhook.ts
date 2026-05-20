@@ -253,12 +253,19 @@ function parseMessage(payload: Record<string, any>): ParsedEvolutionMessage | nu
   }
 
   const key = asRecord(record.key || record.message?.key)
-  // Prefer real @s.whatsapp.net JIDs from remoteJidAlt; fall back to
-  // @lid when nothing else exists so Business chats still flow through.
+  // WhatsApp Business resolution order (per Evolution issue #2326):
+  // 1. key.senderPn / key.participantPn — real phone, set by newer Baileys
+  // 2. key.remoteJidAlt — populated when the alt-JID is the @s.whatsapp.net form
+  // 3. key.remoteJid — the raw addressing (often @lid for Business chats)
+  // Anything else we treat as last resort and fall back to LID.
+  const senderPn = pickString(key.senderPn) || pickString(key.participantPn)
   const altJid = pickString(key.remoteJidAlt)
   const primaryJid = pickString(key.remoteJid, record.remoteJid, record.chatId, record.from, record.number, record.sender)
   let remoteJid: string | null = null
-  if (altJid && altJid.includes('@s.whatsapp.net')) {
+  if (senderPn) {
+    // senderPn comes as bare phone digits — turn it into a @s.whatsapp.net JID
+    remoteJid = senderPn.includes('@') ? senderPn : `${senderPn.replace(/\D/g, '')}@s.whatsapp.net`
+  } else if (altJid && altJid.includes('@s.whatsapp.net')) {
     remoteJid = altJid
   } else if (primaryJid && primaryJid.includes('@s.whatsapp.net')) {
     remoteJid = primaryJid
@@ -542,15 +549,16 @@ async function persistSingleMessage(
     }
   }
 
+  // Only set push_name from inbound messages — outbound pushName is "Você"
+  // (the user themselves). Do not write `name` from webhook, because the
+  // `findContacts` sync owns the agenda name field. UI falls back from
+  // name -> push_name when needed.
   const contactPayload = {
     clerk_org_id: account.clerk_org_id,
     whatsapp_account_id: account.id,
     wa_id: message.waId,
     phone: message.phone,
-    // Only set name from inbound messages (pushName of the sender == contact).
-    // Outbound messages carry the OWN user's pushName ("Você"), which would
-    // wrongly overwrite the contact's real name on every reply.
-    ...(message.direction === 'inbound' && message.name ? { name: message.name } : {}),
+    ...(message.direction === 'inbound' && message.name ? { push_name: message.name } : {}),
     updated_at: new Date().toISOString()
   }
 

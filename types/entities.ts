@@ -22,6 +22,8 @@ export interface Contact {
   whatsapp_account_id: string
   wa_id: string
   name: string | null
+  push_name?: string | null
+  lid_alt?: string | null
   phone: string | null
   avatar_url: string | null
   tags: string[] | null

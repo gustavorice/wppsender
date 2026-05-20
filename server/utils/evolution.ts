@@ -486,10 +486,13 @@ export async function fetchMessagesFromHistory(
   const out: EvolutionHistoryMessage[] = []
   for (const record of records as any[]) {
     const key = record?.key || {}
+    const senderPn = pickString(key.senderPn) || pickString(key.participantPn)
     const altJid = pickString(key.remoteJidAlt)
     const primaryJid = pickString(key.remoteJid)
     let jid: string | null = null
-    if (altJid && altJid.includes('@s.whatsapp.net')) jid = altJid
+    if (senderPn) {
+      jid = senderPn.includes('@') ? senderPn : `${senderPn.replace(/\D/g, '')}@s.whatsapp.net`
+    } else if (altJid && altJid.includes('@s.whatsapp.net')) jid = altJid
     else if (primaryJid && primaryJid.includes('@s.whatsapp.net')) jid = primaryJid
     else if (primaryJid && primaryJid.includes('@lid')) jid = primaryJid
     else if (remoteJid.includes('@s.whatsapp.net') || remoteJid.includes('@lid')) jid = remoteJid
@@ -550,13 +553,15 @@ export async function fetchAllMessages(instanceName: string, maxPages = 20): Pro
 
     for (const record of records) {
       const key = record?.key || {}
+      const senderPn = pickString(key.senderPn) || pickString(key.participantPn)
       const altJid = pickString(key.remoteJidAlt)
       const primaryJid = pickString(key.remoteJid)
-      // Prefer real @s.whatsapp.net JIDs. Accept @lid as fallback so we
-      // don't lose entire chats — most Business chats live exclusively
-      // under @lid and we'd otherwise discard 100% of history.
+      // Real phone resolution priority: senderPn > remoteJidAlt > remoteJid.
+      // @lid still accepted as last resort so Business chats survive.
       let jid: string | null = null
-      if (altJid && altJid.includes('@s.whatsapp.net')) jid = altJid
+      if (senderPn) {
+        jid = senderPn.includes('@') ? senderPn : `${senderPn.replace(/\D/g, '')}@s.whatsapp.net`
+      } else if (altJid && altJid.includes('@s.whatsapp.net')) jid = altJid
       else if (primaryJid && primaryJid.includes('@s.whatsapp.net')) jid = primaryJid
       else if (primaryJid && primaryJid.includes('@lid')) jid = primaryJid
       if (!jid) continue

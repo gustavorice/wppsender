@@ -55,3 +55,37 @@ export function phoneLabel(raw?: string | null, fallback = 'WhatsApp'): string {
   const formatted = formatPhone(raw)
   return formatted || fallback
 }
+
+// Single source of truth for what to show as a contact's "name" in the UI.
+// Hierarchy: real name (agenda) > pushName (set by the person on WhatsApp)
+// > formatted phone > raw phone (only if it's not a LID, which has no real
+// meaning). Always returns a non-empty string when a contact exists.
+export function contactDisplayName(c?: {
+  name?: string | null
+  push_name?: string | null
+  phone?: string | null
+  wa_id?: string | null
+} | null): string {
+  if (!c) return 'Contato'
+  const name = c.name?.trim()
+  if (name) return name
+  const push = c.push_name?.trim()
+  if (push) return push
+  const formatted = formatPhone(c.phone || c.wa_id)
+  if (formatted) return formatted
+  return 'Contato'
+}
+
+// Phone shown under the name. Returns empty string when no real phone is
+// available (e.g. pure LID contact) so the UI can hide that line entirely
+// instead of showing a misleading number.
+export function contactPhoneLabel(c?: {
+  phone?: string | null
+  wa_id?: string | null
+  name?: string | null
+} | null): string {
+  if (!c) return ''
+  const formatted = formatPhone(c.phone || c.wa_id)
+  if (formatted) return formatted
+  return ''
+}

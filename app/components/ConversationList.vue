@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Contact, Conversation, WhatsAppAccount } from '~~/types/entities'
-import { formatPhone } from '~/utils/phone'
+import { contactDisplayName, contactPhoneLabel, formatPhone } from '~/utils/phone'
 
 type ContactStub = Contact & {
   whatsapp_account?: Pick<WhatsAppAccount, 'id' | 'display_name' | 'phone_number' | 'status'> | null
@@ -90,14 +90,14 @@ watch([search, whatsappAccountId], () => {
         <div class="min-w-0 flex-1">
           <div class="flex items-center justify-between gap-2">
             <p class="truncate text-sm font-semibold text-slate-950">
-              {{ conversation.contact?.name || formatPhone(conversation.contact?.phone || conversation.contact?.wa_id) || 'Sem cadastro' }}
+              {{ contactDisplayName(conversation.contact) }}
             </p>
             <span class="shrink-0 text-[11px] text-slate-500">
               {{ conversation.last_message_at ? new Date(conversation.last_message_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '' }}
             </span>
           </div>
           <p class="mt-1 truncate text-xs text-slate-600">
-            {{ conversation.last_message?.body || conversation.contact?.phone || 'Nova conversa' }}
+            {{ conversation.last_message?.body || 'Nova conversa' }}
           </p>
           <p class="mt-1 truncate text-[11px] text-slate-500">
             {{ conversation.whatsapp_account?.display_name || conversation.whatsapp_account?.phone_number || 'WhatsApp' }}
@@ -132,10 +132,10 @@ watch([search, whatsappAccountId], () => {
         </div>
         <div class="min-w-0 flex-1">
           <p class="truncate text-sm font-medium text-slate-900">
-            {{ contact.name || formatPhone(contact.phone || contact.wa_id) || 'Sem nome' }}
+            {{ contactDisplayName(contact) }}
           </p>
-          <p class="mt-1 truncate text-xs text-slate-500">
-            {{ formatPhone(contact.phone || contact.wa_id) }}
+          <p v-if="contactPhoneLabel(contact)" class="mt-1 truncate text-xs text-slate-500">
+            {{ contactPhoneLabel(contact) }}
           </p>
         </div>
       </button>

@@ -104,6 +104,7 @@ export default defineEventHandler(async (event) => {
             wa_id: phone,
             phone,
             name,
+            push_name: inboundPush,
             avatar_url: avatarUrl,
             updated_at: new Date().toISOString()
           }

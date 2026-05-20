@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Conversation } from '~~/types/entities'
-import { formatPhone } from '~/utils/phone'
+import { contactDisplayName, contactPhoneLabel, formatPhone } from '~/utils/phone'
 
 const props = defineProps<{
   conversation: Conversation | null
@@ -45,10 +45,10 @@ const lastSeen = computed(() => {
           </div>
         </div>
         <h3 class="mt-3 truncate text-base font-semibold text-slate-950">
-          {{ conversation.contact?.name || formatPhone(conversation.contact?.phone) || 'Sem cadastro' }}
+          {{ contactDisplayName(conversation.contact) }}
         </h3>
-        <p class="mt-0.5 text-xs text-slate-500">
-          {{ formatPhone(conversation.contact?.phone) || 'WhatsApp Business (sem nº direto)' }}
+        <p v-if="contactPhoneLabel(conversation.contact)" class="mt-0.5 text-xs text-slate-500">
+          {{ contactPhoneLabel(conversation.contact) }}
         </p>
         <a
           v-if="waLink"

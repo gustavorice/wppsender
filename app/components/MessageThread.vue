@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Conversation, Message } from '~~/types/entities'
-import { formatPhone } from '~/utils/phone'
+import { contactDisplayName, contactPhoneLabel } from '~/utils/phone'
 
 defineProps<{
   conversation: Conversation | null
@@ -41,10 +41,10 @@ watch(
           </div>
           <div class="min-w-0">
             <h2 class="truncate text-sm font-semibold text-slate-950">
-              {{ conversation.contact?.name || formatPhone(conversation.contact?.phone || conversation.contact?.wa_id) || 'Sem cadastro' }}
+              {{ contactDisplayName(conversation.contact) }}
             </h2>
-            <p class="truncate text-xs text-slate-500">
-              {{ formatPhone(conversation.contact?.phone || conversation.contact?.wa_id) || 'WhatsApp Business' }}
+            <p v-if="contactPhoneLabel(conversation.contact)" class="truncate text-xs text-slate-500">
+              {{ contactPhoneLabel(conversation.contact) }}
             </p>
           </div>
         </div>

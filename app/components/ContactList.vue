@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Contact, WhatsAppAccount } from '~~/types/entities'
-import { formatPhone, isLidWaId } from '~/utils/phone'
+import { contactDisplayName, contactPhoneLabel } from '~/utils/phone'
 
 const props = defineProps<{
   contacts: Contact[]
@@ -85,14 +85,14 @@ watch([search, whatsappAccountId], () => {
                     {{ (contact.name || '?').slice(0, 1).toUpperCase() }}
                   </div>
                 </div>
-                <span>{{ contact.name || formatPhone(contact.phone || contact.wa_id) || 'Sem cadastro' }}</span>
+                <span>{{ contactDisplayName(contact) }}</span>
               </div>
             </td>
             <td class="px-4 py-3 text-slate-600">
-              <template v-if="formatPhone(contact.phone || contact.wa_id)">
-                {{ formatPhone(contact.phone || contact.wa_id) }}
+              <template v-if="contactPhoneLabel(contact)">
+                {{ contactPhoneLabel(contact) }}
               </template>
-              <span v-else class="text-xs italic text-slate-400">Sem nº cadastrado</span>
+              <span v-else class="text-slate-300">—</span>
             </td>
             <td class="px-4 py-3 text-slate-600">{{ accountName(contact.whatsapp_account_id) }}</td>
             <td class="px-4 py-3">
