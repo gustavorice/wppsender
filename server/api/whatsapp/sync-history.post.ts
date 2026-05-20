@@ -174,11 +174,105 @@ export default defineEventHandler(async (event) => {
       savedMessages += chunk.length
     }
 
+    // 7. MERGE pass — when the same name exists on a "real phone" contact
+    // AND on a LID contact, fold the LID contact into the real one so the
+    // inbox doesn't show duplicates. (`findContacts` produced the real
+    // entries; `findMessages` produced the LID ones.)
+    const { data: allContacts } = await supabase
+      .from('contacts')
+      .select('id, wa_id, name, avatar_url')
+      .eq('clerk_org_id', tenant.orgId)
+      .eq('whatsapp_account_id', account.id as string)
+
+    const realByName = new Map<string, { id: string; wa_id: string; avatar_url: string | null }>()
+    const lidByName = new Map<string, Array<{ id: string; wa_id: string; avatar_url: string | null }>>()
+    for (const c of allContacts || []) {
+      if (!c.name) continue
+      const key = String(c.name).trim().toLowerCase()
+      if (!key) continue
+      const len = (c.wa_id as string).length
+      const isReal = len >= 10 && len <= 13 && (c.wa_id as string).startsWith('55')
+      if (isReal) {
+        if (!realByName.has(key)) realByName.set(key, { id: c.id as string, wa_id: c.wa_id as string, avatar_url: c.avatar_url as string | null })
+      } else {
+        const arr = lidByName.get(key) || []
+        arr.push({ id: c.id as string, wa_id: c.wa_id as string, avatar_url: c.avatar_url as string | null })
+        lidByName.set(key, arr)
+      }
+    }
+
+    let merged = 0
+    for (const [key, lids] of lidByName.entries()) {
+      const real = realByName.get(key)
+      if (!real) continue
+      for (const lid of lids) {
+        // Copy avatar over if real one lacks it
+        if (lid.avatar_url && !real.avatar_url) {
+          await supabase
+            .from('contacts')
+            .update({ avatar_url: lid.avatar_url })
+            .eq('id', real.id)
+            .eq('clerk_org_id', tenant.orgId)
+          real.avatar_url = lid.avatar_url
+        }
+        // Find LID conversation
+        const { data: lidConvs } = await supabase
+          .from('conversations')
+          .select('id, last_message_at')
+          .eq('clerk_org_id', tenant.orgId)
+          .eq('whatsapp_account_id', account.id as string)
+          .eq('contact_id', lid.id)
+
+        const { data: realConv } = await supabase
+          .from('conversations')
+          .select('id, last_message_at')
+          .eq('clerk_org_id', tenant.orgId)
+          .eq('whatsapp_account_id', account.id as string)
+          .eq('contact_id', real.id)
+          .maybeSingle()
+
+        let realConvId: string | null = realConv?.id ?? null
+        if (!realConvId) {
+          // Create real conv if missing
+          const { data: created } = await supabase
+            .from('conversations')
+            .insert({
+              clerk_org_id: tenant.orgId,
+              whatsapp_account_id: account.id as string,
+              contact_id: real.id,
+              status: 'open'
+            })
+            .select('id')
+            .single()
+          realConvId = created?.id ?? null
+        }
+
+        if (realConvId) {
+          // Repoint messages from each LID conversation to the real one
+          for (const lc of lidConvs || []) {
+            await supabase
+              .from('messages')
+              .update({ conversation_id: realConvId, contact_id: real.id })
+              .eq('clerk_org_id', tenant.orgId)
+              .eq('conversation_id', lc.id as string)
+          }
+        }
+
+        // Delete LID conversations + contact (messages already repointed)
+        for (const lc of lidConvs || []) {
+          await supabase.from('conversations').delete().eq('id', lc.id as string).eq('clerk_org_id', tenant.orgId)
+        }
+        await supabase.from('contacts').delete().eq('id', lid.id).eq('clerk_org_id', tenant.orgId)
+        merged += 1
+      }
+    }
+
     return {
       data: {
         synced: savedMessages,
         conversations: conversationRows.length,
-        contacts: contactRows.length
+        contacts: contactRows.length,
+        merged
       }
     }
   } catch (error) {
