@@ -83,7 +83,8 @@ export default defineEventHandler(async (event) => {
     const conversationRows = Array.from(byPhone.entries()).flatMap(([phone, msgs]) => {
       const contactId = contactByPhone.get(phone)
       if (!contactId) return []
-      const lastTs = msgs[msgs.length - 1].sentAt
+      const last = msgs[msgs.length - 1]
+      const lastTs = last ? last.sentAt : new Date().toISOString()
       return [
         {
           clerk_org_id: tenant.orgId,
