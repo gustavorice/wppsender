@@ -236,10 +236,30 @@ function parseMessage(payload: Record<string, any>): ParsedEvolutionMessage | nu
   }
 
   const key = asRecord(record.key || record.message?.key)
-  const remoteJid = pickString(key.remoteJid, record.remoteJid, record.chatId, record.from, record.number, record.sender)
+  // WhatsApp Business sends @lid for chats but exposes the real
+  // @s.whatsapp.net JID via key.remoteJidAlt. Prefer the alt so contacts
+  // get stored under their real phone number.
+  const altJid = pickString(key.remoteJidAlt)
+  const primaryJid = pickString(key.remoteJid, record.remoteJid, record.chatId, record.from, record.number, record.sender)
+  let remoteJid: string | null = null
+  if (altJid && altJid.includes('@s.whatsapp.net')) {
+    remoteJid = altJid
+  } else if (primaryJid && primaryJid.includes('@s.whatsapp.net')) {
+    remoteJid = primaryJid
+  } else if (primaryJid && !primaryJid.includes('@lid')) {
+    // Allow non-@lid JIDs from non-business clients (raw @s.whatsapp.net was
+    // already handled above; this catches odd formats from mocks/tests).
+    remoteJid = primaryJid
+  }
 
   // Reject @lid / @broadcast / @g.us early — these create shadow contacts.
   if (remoteJid && !isAcceptableJid(remoteJid)) {
+    return null
+  }
+
+  // If we still don't have a real JID but only @lid was given, skip the
+  // message entirely. We refuse to fabricate a phone number from a LID.
+  if (!remoteJid && primaryJid && primaryJid.includes('@lid')) {
     return null
   }
 

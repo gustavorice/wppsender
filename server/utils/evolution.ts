@@ -418,25 +418,42 @@ export async function fetchMessagesFromHistory(
   const config = getEvolutionConfig()
   if (config.isMock) return []
 
-  let raw: any
-  try {
-    raw = await evolutionFetch<any>(`/chat/findMessages/${encodeURIComponent(instanceName)}`, {
-      method: 'POST',
-      body: {
-        where: { key: { remoteJid } },
-        limit
-      }
-    })
-  } catch {
-    return []
+  // Evolution stores chats keyed by either @s.whatsapp.net (regular) or
+  // @lid (business). We don't know which one ahead of time, so we query
+  // by remoteJidAlt (the canonical phone JID) which matches business
+  // chats AND falls back to the @s.whatsapp.net key for regular ones.
+  // If that query returns nothing, retry with the regular remoteJid query.
+  async function runQuery(where: any): Promise<any[]> {
+    try {
+      const r = await evolutionFetch<any>(`/chat/findMessages/${encodeURIComponent(instanceName)}`, {
+        method: 'POST',
+        body: { where, limit }
+      })
+      return r?.messages?.records || r?.records || (Array.isArray(r) ? r : [])
+    } catch {
+      return []
+    }
   }
 
-  const records = raw?.messages?.records || raw?.records || (Array.isArray(raw) ? raw : [])
+  let records = await runQuery({ key: { remoteJidAlt: remoteJid } })
+  if (records.length === 0) {
+    records = await runQuery({ key: { remoteJid } })
+  }
   const out: EvolutionHistoryMessage[] = []
   for (const record of records as any[]) {
     const key = record?.key || {}
-    const jid = pickString(key.remoteJid) || remoteJid
-    if (!jid || jid.includes('@lid') || jid.includes('@g.us') || jid.includes('@broadcast')) continue
+    // WhatsApp Business stores chats under @lid identifiers but ships the
+    // real @s.whatsapp.net JID in key.remoteJidAlt. Prefer that when we have
+    // it; fall back to the search input only as last resort. Never store
+    // @lid as the contact JID — those are not real phone numbers.
+    const altJid = pickString(key.remoteJidAlt)
+    const primaryJid = pickString(key.remoteJid)
+    let jid: string | null = null
+    if (altJid && altJid.includes('@s.whatsapp.net')) jid = altJid
+    else if (primaryJid && primaryJid.includes('@s.whatsapp.net')) jid = primaryJid
+    else if (remoteJid.includes('@s.whatsapp.net')) jid = remoteJid
+    if (!jid) continue
+    if (jid.includes('@g.us') || jid.includes('@broadcast') || jid.includes('@lid')) continue
     const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
     if (!phone || phone.length < 10 || phone.length > 13) continue
 
