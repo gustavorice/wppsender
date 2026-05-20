@@ -90,6 +90,26 @@ export function useWhatsappAccounts() {
     }
   }
 
+  async function syncHistory(accountId: string) {
+    try {
+      const response = await $fetch<{ data: { synced: number; conversations: number; contacts: number } }>('/api/whatsapp/sync-history', {
+        method: 'POST',
+        body: { whatsapp_account_id: accountId }
+      })
+      if (response.data?.synced) {
+        toast.add({
+          title: `${response.data.synced} mensagens importadas em ${response.data.conversations} conversas`,
+          color: 'success'
+        })
+      }
+      return response.data
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Falha ao sincronizar historico.'
+      toast.add({ title: 'Sync de historico falhou', description: message, color: 'warning' })
+      return null
+    }
+  }
+
   async function simulateIncomingMessage(accountId: string) {
     const response = await $fetch('/api/dev/simulate-message', {
       method: 'POST',
@@ -121,6 +141,7 @@ export function useWhatsappAccounts() {
     disconnect,
     removeAccount,
     simulateIncomingMessage,
-    syncContacts
+    syncContacts,
+    syncHistory
   }
 }

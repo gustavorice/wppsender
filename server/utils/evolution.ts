@@ -483,6 +483,75 @@ export async function fetchMessagesFromHistory(
   return out
 }
 
+// Pull every stored message for the instance (paginated). Used to mass-import
+// everything Evolution has, then dispatch each message into its own
+// conversation based on the resolved real JID.
+export async function fetchAllMessages(instanceName: string, maxPages = 20): Promise<EvolutionHistoryMessage[]> {
+  const config = getEvolutionConfig()
+  if (config.isMock) return []
+
+  const out: EvolutionHistoryMessage[] = []
+  const perPage = 50
+
+  for (let page = 1; page <= maxPages; page++) {
+    let raw: any
+    try {
+      raw = await evolutionFetch<any>(`/chat/findMessages/${encodeURIComponent(instanceName)}`, {
+        method: 'POST',
+        body: { where: {}, page, offset: perPage }
+      })
+    } catch {
+      break
+    }
+    const msgs = raw?.messages
+    const records: any[] = msgs?.records || (Array.isArray(raw) ? raw : raw?.records || [])
+    if (records.length === 0) break
+
+    for (const record of records) {
+      const key = record?.key || {}
+      const altJid = pickString(key.remoteJidAlt)
+      const primaryJid = pickString(key.remoteJid)
+      let jid: string | null = null
+      if (altJid && altJid.includes('@s.whatsapp.net')) jid = altJid
+      else if (primaryJid && primaryJid.includes('@s.whatsapp.net')) jid = primaryJid
+      if (!jid) continue
+      if (jid.includes('@g.us') || jid.includes('@broadcast') || jid.includes('@lid')) continue
+      const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
+      if (!phone || phone.length < 10 || phone.length > 13) continue
+
+      const waMessageId = pickString(key.id) || pickString(record?.messageId) || `histo_${phone}_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
+      const fromMe = Boolean(key.fromMe)
+      const ts = record?.messageTimestamp || record?.timestamp || record?.date
+      const sentAt = ts
+        ? new Date(typeof ts === 'number' ? (ts > 9999999999 ? ts : ts * 1000) : Date.parse(String(ts))).toISOString()
+        : new Date().toISOString()
+      const classified = classifyMessage(record)
+
+      out.push({
+        waMessageId,
+        fromMe,
+        remoteJid: jid,
+        phone,
+        pushName: cleanName(firstString(record?.pushName, record?.notifyName), phone),
+        body: classified.body,
+        mediaUrl: classified.mediaUrl,
+        type: classified.type,
+        sentAt,
+        raw: record
+      })
+    }
+
+    // Stop if we got fewer than perPage rows (last page).
+    if (records.length < perPage) break
+    // Stop if Evolution tells us we're past the last page.
+    const totalPages = msgs?.pages
+    if (typeof totalPages === 'number' && page >= totalPages) break
+  }
+
+  out.sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime())
+  return out
+}
+
 export async function fetchContacts(instanceName: string): Promise<EvolutionContact[]> {
   const config = getEvolutionConfig()
 

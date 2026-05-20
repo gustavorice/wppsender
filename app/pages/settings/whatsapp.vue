@@ -12,6 +12,7 @@ const {
   removeAccount,
   simulateIncomingMessage,
   syncContacts,
+  syncHistory,
   accounts,
   loading
 } = useWhatsappAccounts()
@@ -25,6 +26,7 @@ watch(
       if (acc.status === 'connected' && !syncedAccountIds.value.has(acc.id)) {
         syncedAccountIds.value.add(acc.id)
         void syncContacts(acc.id)
+        void syncHistory(acc.id)
       }
     }
   },

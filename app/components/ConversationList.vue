@@ -57,11 +57,11 @@ watch([search, whatsappAccountId], () => {
 
     <LoadingState v-if="loading" label="Carregando conversas" />
     <EmptyState
-      v-else-if="conversations.length === 0 && orphanContacts.length === 0"
+      v-else-if="conversations.length === 0 && (!search || orphanContacts.length === 0)"
       class="m-3"
       icon="i-lucide-message-circle"
-      title="Sem contatos"
-      description="Conecte um numero e sincronize a agenda para ver pessoas aqui."
+      title="Sem conversas"
+      description="As mensagens recebidas aparecem aqui em tempo real. Use a busca acima para encontrar contatos."
     />
 
     <div v-else class="min-h-0 flex-1 overflow-y-auto">
@@ -104,14 +104,14 @@ watch([search, whatsappAccountId], () => {
       </button>
 
       <div
-        v-if="orphanContacts.length > 0"
+        v-if="search && orphanContacts.length > 0"
         class="sticky top-0 z-10 border-b border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500"
       >
-        Outros contatos ({{ orphanContacts.length }})
+        Contatos sem conversa ({{ orphanContacts.length }})
       </div>
 
       <button
-        v-for="contact in orphanContacts"
+        v-for="contact in (search ? orphanContacts : [])"
         :key="`contact-${contact.id}`"
         class="flex w-full items-start gap-3 border-b border-slate-100 px-3 py-3 text-left transition hover:bg-slate-50"
         @click="emit('selectContact', contact.id)"
