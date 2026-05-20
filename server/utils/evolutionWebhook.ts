@@ -150,6 +150,23 @@ function isAcceptablePhone(phone: string): boolean {
   return phone.length >= 10 && phone.length <= 13
 }
 
+// Inspect the raw payload to figure out if the original JID was @lid. Used
+// to drive the enrichment call shape (LID lookups go through different
+// Evolution endpoints than regular phone lookups).
+function remoteJidIsLid(payload: any): boolean {
+  const data = payload?.data
+  const key = data?.key || data?.message?.key || {}
+  const remoteJid: string | undefined = key?.remoteJid || data?.remoteJid
+  if (!remoteJid) return false
+  if (remoteJid.includes('@lid')) {
+    // If we also have a real JID, prefer that (no LID treatment).
+    const alt: string | undefined = key?.remoteJidAlt
+    if (alt && alt.includes('@s.whatsapp.net')) return false
+    return true
+  }
+  return false
+}
+
 // Evolution / WhatsApp Web fall back to the raw phone number as pushName /
 // chat name when the contact has no profile name. That's never a useful
 // display name — it just shadows the phone we already store. Detect and
@@ -525,8 +542,10 @@ async function persistSingleMessage(
   // Enrich contact in-band when it's still missing name / avatar — gives the
   // UI an instant picture+name on the very first message instead of waiting
   // for the next CONTACTS_SET batch (which only fires on initial sync).
-  if ((!contact.name || !contact.avatar_url) && message.direction === 'inbound') {
-    const profile = await fetchContactProfile(account.instance_name, message.phone, 2500).catch(() => null)
+  // For both @s.whatsapp.net AND @lid identifiers.
+  if (!contact.name || !contact.avatar_url) {
+    const isLid = (parsed.message?.waId === message.waId) && remoteJidIsLid(payload)
+    const profile = await fetchContactProfile(account.instance_name, message.phone, { isLid, timeoutMs: 2500 }).catch(() => null)
     if (profile && (profile.name || profile.avatarUrl)) {
       const enrich: Record<string, unknown> = { updated_at: new Date().toISOString() }
       if (profile.name && !contact.name) enrich.name = profile.name

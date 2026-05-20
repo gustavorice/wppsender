@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { getServerSupabase } from '~~/server/utils/supabase'
 import { requireOrgAdmin } from '~~/server/utils/auth'
-import { fetchAllMessages } from '~~/server/utils/evolution'
+import { fetchAllMessages, fetchContactProfile } from '~~/server/utils/evolution'
 import { apiError, normalizeError } from '~~/server/utils/errors'
 import { rateLimit } from '~~/server/utils/rateLimit'
 
@@ -41,22 +41,47 @@ export default defineEventHandler(async (event) => {
 
     // 1. Bucket by phone (one contact + one conversation per unique phone)
     const byPhone = new Map<string, typeof messages>()
+    const isLidByPhone = new Map<string, boolean>()
     for (const m of messages) {
       const arr = byPhone.get(m.phone) || []
       arr.push(m)
       byPhone.set(m.phone, arr)
+      if (m.remoteJid.includes('@lid')) {
+        isLidByPhone.set(m.phone, true)
+      }
+    }
+
+    // 1b. Enrich each contact (parallel, capped) with name + avatar from
+    // the appropriate Evolution lookup. This is what populates "Gabriel
+    // Barreto" + foto on a row whose wa_id is a LID number.
+    const phonesToEnrich = Array.from(byPhone.keys())
+    const enrichResults = new Map<string, { name: string | null; avatarUrl: string | null }>()
+    const concurrency = 5
+    for (let i = 0; i < phonesToEnrich.length; i += concurrency) {
+      const batch = phonesToEnrich.slice(i, i + concurrency)
+      await Promise.all(
+        batch.map(async (phone) => {
+          const isLid = isLidByPhone.get(phone) === true
+          const profile = await fetchContactProfile(account.instance_name, phone, { isLid, timeoutMs: 4000 }).catch(() => null)
+          if (profile) enrichResults.set(phone, profile)
+        })
+      )
     }
 
     // 2. Upsert contacts
     const contactRows = Array.from(byPhone.entries()).map(([phone, msgs]) => {
       // Find a non-fromMe pushName (the contact's name); falls back to null.
       const inboundPush = msgs.find((m) => !m.fromMe)?.pushName || null
+      const enriched = enrichResults.get(phone)
+      const name = enriched?.name || inboundPush
+      const avatarUrl = enriched?.avatarUrl || null
       return {
         clerk_org_id: tenant.orgId,
         whatsapp_account_id: account.id,
         wa_id: phone,
         phone,
-        name: inboundPush,
+        name,
+        avatar_url: avatarUrl,
         updated_at: new Date().toISOString()
       }
     })

@@ -74,10 +74,12 @@ onMounted(async () => {
   <div class="grid h-[calc(100vh-120px)] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm lg:grid-cols-[340px_minmax(0,1fr)] xl:grid-cols-[340px_minmax(0,1fr)_320px]">
     <ConversationList
       :conversations="conversations"
+      :orphan-contacts="orphanContacts"
       :accounts="accounts"
       :active-conversation-id="activeConversationId"
       :loading="loading"
       @select="selectConversation"
+      @select-contact="selectContact"
       @filter="filterConversations"
     />
     <MessageThread :conversation="activeConversation" :messages="activeMessages" :loading="messageLoading" />
