@@ -809,6 +809,49 @@ export async function processEvolutionWebhook(payload: EvolutionWebhookPayload) 
     return { ok: true, account_id: account.id, event_type: eventType, ...result }
   }
 
+  // PRESENCE_UPDATE → ephemeral typing/recording broadcast via Supabase
+  // Realtime. We never persist this; the UI listens to the broadcast
+  // channel and shows "está digitando..." for a few seconds.
+  if (eventType === 'PRESENCE_UPDATE') {
+    try {
+      const data = asRecord(record.data)
+      const targetJid = pickString(data.id)
+      if (!targetJid || targetJid.includes('@g.us')) {
+        return { ok: true, account_id: account.id, event_type: eventType, skipped: 'group-or-no-jid' }
+      }
+      const presences = asRecord(data.presences)
+      const presenceEntry = asRecord(presences[targetJid])
+      const state = pickString(presenceEntry.lastKnownPresence)
+      if (!state) return { ok: true, account_id: account.id, event_type: eventType, skipped: 'no-state' }
+
+      const phone = targetJid.replace(/@.+$/, '').replace(/\D/g, '')
+      let resolvedWaId = phone
+      // Try to resolve LID -> real BR contact
+      const { data: lookup } = await supabase
+        .from('contacts')
+        .select('wa_id')
+        .eq('clerk_org_id', (account as any).clerk_org_id)
+        .eq('whatsapp_account_id', (account as any).id)
+        .or(`wa_id.eq.${phone},lid_alt.eq.${phone}`)
+        .limit(1)
+        .maybeSingle()
+      if (lookup?.wa_id) resolvedWaId = lookup.wa_id as string
+
+      await supabase
+        .channel(`presence:${(account as any).id}:${resolvedWaId}`)
+        .send({
+          type: 'broadcast',
+          event: 'typing',
+          payload: { wa_id: resolvedWaId, state, at: Date.now() }
+        })
+        .catch(() => null)
+
+      return { ok: true, account_id: (account as any).id, event_type: eventType, wa_id: resolvedWaId, state }
+    } catch {
+      return { ok: true, account_id: (account as any).id, event_type: eventType, skipped: 'presence-error' }
+    }
+  }
+
   if (parsed.message) {
     return persistSingleMessage(payload, account as WhatsAppAccountRow, parsed)
   }

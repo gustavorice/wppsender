@@ -174,7 +174,8 @@ export async function createInstance(instanceName: string): Promise<unknown> {
               'CHATS_UPDATE',
               'CONTACTS_SET',
               'CONTACTS_UPSERT',
-              'CONTACTS_UPDATE'
+              'CONTACTS_UPDATE',
+              'PRESENCE_UPDATE'
             ]
           }
         : undefined

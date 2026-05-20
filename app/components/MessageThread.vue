@@ -2,13 +2,24 @@
 import type { Conversation, Message } from '~~/types/entities'
 import { contactDisplayName, contactPhoneLabel } from '~/utils/phone'
 
-defineProps<{
+const props = defineProps<{
   conversation: Conversation | null
   messages: Message[]
   loading?: boolean
 }>()
 
 const threadEl = ref<HTMLElement | null>(null)
+
+const { isTyping, isRecording } = useTypingIndicator(
+  () => props.conversation?.whatsapp_account_id ?? null,
+  () => props.conversation?.contact?.wa_id ?? null
+)
+
+const presenceLabel = computed(() => {
+  if (isRecording.value) return 'gravando áudio…'
+  if (isTyping.value) return 'digitando…'
+  return ''
+})
 
 watch(
   () => threadEl.value?.scrollHeight,
@@ -43,7 +54,10 @@ watch(
             <h2 class="truncate text-sm font-semibold text-slate-950">
               {{ contactDisplayName(conversation.contact) }}
             </h2>
-            <p v-if="contactPhoneLabel(conversation.contact)" class="truncate text-xs text-slate-500">
+            <p v-if="presenceLabel" class="truncate text-xs font-medium text-emerald-600">
+              {{ presenceLabel }}
+            </p>
+            <p v-else-if="contactPhoneLabel(conversation.contact)" class="truncate text-xs text-slate-500">
               {{ contactPhoneLabel(conversation.contact) }}
             </p>
           </div>
