@@ -120,6 +120,31 @@ function normalizePhone(value: string): string {
   return value.replace(/@.+$/, '').replace(/\D/g, '')
 }
 
+// WhatsApp Business uses @lid identifiers (Linked Device IDs) that masquerade
+// as phone numbers but are virtual — they show up alongside the real
+// @s.whatsapp.net JID and would create duplicate "shadow" contacts. Detect
+// and reject anything that isn't a real WhatsApp user JID.
+function isAcceptableJid(rawJid: string | null | undefined): boolean {
+  if (!rawJid) return false
+  const trimmed = rawJid.trim()
+  if (!trimmed) return false
+  if (trimmed.includes('@g.us') || trimmed.includes('@broadcast') || trimmed === 'status@broadcast') {
+    return false
+  }
+  if (trimmed.includes('@lid') || trimmed.includes('@newsletter') || trimmed.includes('@bot')) {
+    return false
+  }
+  return true
+}
+
+// Final safety: even with a clean JID, the resulting phone digits should look
+// like a real phone (E.164 is 8-15 digits). LIDs that slip through tend to
+// produce numbers outside that range.
+function isAcceptablePhone(phone: string): boolean {
+  if (!phone) return false
+  return phone.length >= 8 && phone.length <= 15
+}
+
 // Evolution / WhatsApp Web fall back to the raw phone number as pushName /
 // chat name when the contact has no profile name. That's never a useful
 // display name — it just shadows the phone we already store. Detect and
@@ -207,9 +232,15 @@ function parseMessage(payload: Record<string, any>): ParsedEvolutionMessage | nu
 
   const key = asRecord(record.key || record.message?.key)
   const remoteJid = pickString(key.remoteJid, record.remoteJid, record.chatId, record.from, record.number, record.sender)
+
+  // Reject @lid / @broadcast / @g.us early — these create shadow contacts.
+  if (remoteJid && !isAcceptableJid(remoteJid)) {
+    return null
+  }
+
   const phone = remoteJid ? normalizePhone(remoteJid) : normalizePhone(pickString(record.phone, record.participant) || '')
 
-  if (!phone) {
+  if (!phone || !isAcceptablePhone(phone)) {
     return null
   }
 
@@ -278,15 +309,12 @@ function normalizeContactRecord(record: any): { waId: string; phone: string; nam
 
   const jid =
     pickString(record.id, record.remoteJid, record.jid, record.contactId, record._id, record.key?.remoteJid)
-  if (!jid) {
-    return null
-  }
-  if (jid.includes('@g.us') || jid.includes('@broadcast')) {
+  if (!isAcceptableJid(jid)) {
     return null
   }
 
-  const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
-  if (!phone) {
+  const phone = (jid as string).replace(/@.+$/, '').replace(/\D/g, '')
+  if (!isAcceptablePhone(phone)) {
     return null
   }
 
@@ -307,15 +335,12 @@ function normalizeChatRecord(record: any): { waId: string; phone: string; name: 
   }
 
   const jid = pickString(record.id, record.remoteJid, record.jid, record.chatId)
-  if (!jid) {
-    return null
-  }
-  if (jid.includes('@g.us') || jid.includes('@broadcast')) {
+  if (!isAcceptableJid(jid)) {
     return null
   }
 
-  const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
-  if (!phone) {
+  const phone = (jid as string).replace(/@.+$/, '').replace(/\D/g, '')
+  if (!isAcceptablePhone(phone)) {
     return null
   }
 

@@ -1,27 +1,10 @@
 <script setup lang="ts">
 import type { Conversation } from '~~/types/entities'
+import { formatPhone } from '~/utils/phone'
 
 const props = defineProps<{
   conversation: Conversation | null
 }>()
-
-function formatPhone(raw?: string | null): string {
-  if (!raw) return ''
-  const digits = raw.replace(/\D/g, '')
-  // Brazilian: +55 (DD) 9XXXX-XXXX
-  if (digits.startsWith('55') && (digits.length === 12 || digits.length === 13)) {
-    const cc = digits.slice(0, 2)
-    const ddd = digits.slice(2, 4)
-    const rest = digits.slice(4)
-    const mid = rest.slice(0, rest.length - 4)
-    const tail = rest.slice(-4)
-    return `+${cc} (${ddd}) ${mid}-${tail}`
-  }
-  if (digits.length >= 10) {
-    return `+${digits}`
-  }
-  return raw
-}
 
 const waLink = computed(() => {
   const phone = props.conversation?.contact?.phone || props.conversation?.contact?.wa_id

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Contact, WhatsAppAccount } from '~~/types/entities'
+import { formatPhone } from '~/utils/phone'
 
 const props = defineProps<{
   contacts: Contact[]
@@ -61,8 +62,8 @@ watch([search, whatsappAccountId], () => {
         </thead>
         <tbody class="divide-y divide-slate-100 bg-white">
           <tr v-for="contact in contacts" :key="contact.id" class="hover:bg-slate-50">
-            <td class="px-4 py-3 font-medium text-slate-950">{{ contact.name || 'Sem nome' }}</td>
-            <td class="px-4 py-3 text-slate-600">{{ contact.phone || contact.wa_id }}</td>
+            <td class="px-4 py-3 font-medium text-slate-950">{{ contact.name || formatPhone(contact.phone || contact.wa_id) || 'Sem nome' }}</td>
+            <td class="px-4 py-3 text-slate-600">{{ formatPhone(contact.phone || contact.wa_id) }}</td>
             <td class="px-4 py-3 text-slate-600">{{ accountName(contact.whatsapp_account_id) }}</td>
             <td class="px-4 py-3">
               <div class="flex flex-wrap gap-1">

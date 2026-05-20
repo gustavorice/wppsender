@@ -219,12 +219,21 @@ function normalizeRawContact(record: any): EvolutionContact | null {
     return null
   }
 
-  if (jid.includes('@g.us') || jid.includes('@broadcast') || jid === 'status@broadcast') {
+  // Reject WhatsApp Business virtual identifiers (@lid, @newsletter, @bot)
+  // and group/broadcast JIDs. These create shadow contacts.
+  if (
+    jid.includes('@g.us') ||
+    jid.includes('@broadcast') ||
+    jid === 'status@broadcast' ||
+    jid.includes('@lid') ||
+    jid.includes('@newsletter') ||
+    jid.includes('@bot')
+  ) {
     return null
   }
 
   const phone = jid.replace(/@.+$/, '').replace(/\D/g, '')
-  if (!phone) {
+  if (!phone || phone.length < 8 || phone.length > 15) {
     return null
   }
 
