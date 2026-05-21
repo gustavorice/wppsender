@@ -438,15 +438,30 @@ async function persistContactsBatch(
       seen.add(item.waId)
       return true
     })
-    .map((item) => ({
-      clerk_org_id: account.clerk_org_id,
-      whatsapp_account_id: account.id,
-      wa_id: item.waId,
-      phone: item.phone,
-      name: item.name,
-      avatar_url: item.avatarUrl,
-      updated_at: new Date().toISOString()
-    }))
+    .map((item) => {
+      // Same null-guard as sync.post.ts: only include name/avatar in the
+      // payload when we have a non-null value, otherwise the upsert
+      // overwrites a previously good name (set by sync or by a manual
+      // rename) with NULL. This is the bug that erased 'gu'.
+      const row: {
+        clerk_org_id: string
+        whatsapp_account_id: string
+        wa_id: string
+        phone: string
+        updated_at: string
+        name?: string
+        avatar_url?: string
+      } = {
+        clerk_org_id: account.clerk_org_id,
+        whatsapp_account_id: account.id,
+        wa_id: item.waId,
+        phone: item.phone,
+        updated_at: new Date().toISOString()
+      }
+      if (item.name) row.name = item.name
+      if (item.avatarUrl) row.avatar_url = item.avatarUrl
+      return row
+    })
 
   const supabase = getServerSupabase()
   const { error } = await supabase
@@ -493,14 +508,25 @@ async function persistChatsBatch(
   }
 
   const supabase = getServerSupabase()
-  const contactRows = normalized.map((item) => ({
-    clerk_org_id: account.clerk_org_id,
-    whatsapp_account_id: account.id,
-    wa_id: item.waId,
-    phone: item.phone,
-    name: item.name,
-    updated_at: new Date().toISOString()
-  }))
+  const contactRows = normalized.map((item) => {
+    const row: {
+      clerk_org_id: string
+      whatsapp_account_id: string
+      wa_id: string
+      phone: string
+      updated_at: string
+      name?: string
+    } = {
+      clerk_org_id: account.clerk_org_id,
+      whatsapp_account_id: account.id,
+      wa_id: item.waId,
+      phone: item.phone,
+      updated_at: new Date().toISOString()
+    }
+    // Null-guard: never overwrite an existing name with NULL.
+    if (item.name) row.name = item.name
+    return row
+  })
 
   const { data: contacts, error: contactError } = await supabase
     .from('contacts')

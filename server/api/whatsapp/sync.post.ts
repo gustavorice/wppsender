@@ -120,17 +120,36 @@ export default defineEventHandler(async (event) => {
         contactSeen.add(contact.waId)
         return true
       })
-      .map((contact) => ({
-        clerk_org_id: account.clerk_org_id,
-        whatsapp_account_id: account.id,
-        wa_id: contact.waId,
-        phone: contact.phone || contact.waId,
-        name: contact.name || contact.pushName,
-        push_name: contact.pushName,
-        avatar_url: contact.avatarUrl,
-        ...(lidAltByRealWaId.get(contact.waId) ? { lid_alt: lidAltByRealWaId.get(contact.waId) } : {}),
-        updated_at: new Date().toISOString()
-      }))
+      .map((contact) => {
+        // CRITICAL: only include name/push_name/avatar in the upsert payload
+        // when we actually have a non-null value. Otherwise the upsert ends up
+        // overwriting a perfectly good name (set by a previous sync or by the
+        // user's manual rename) with NULL — which is how 'gu' lost her name.
+        const row: {
+          clerk_org_id: string
+          whatsapp_account_id: string
+          wa_id: string
+          phone: string
+          updated_at: string
+          name?: string
+          push_name?: string
+          avatar_url?: string
+          lid_alt?: string
+        } = {
+          clerk_org_id: account.clerk_org_id,
+          whatsapp_account_id: account.id,
+          wa_id: contact.waId,
+          phone: contact.phone || contact.waId,
+          updated_at: new Date().toISOString()
+        }
+        const candidateName = contact.name || contact.pushName
+        if (candidateName) row.name = candidateName
+        if (contact.pushName) row.push_name = contact.pushName
+        if (contact.avatarUrl) row.avatar_url = contact.avatarUrl
+        const lidAlt = lidAltByRealWaId.get(contact.waId)
+        if (lidAlt) row.lid_alt = lidAlt
+        return row
+      })
 
     let savedContacts = 0
     const chunkSize = 500
@@ -152,14 +171,25 @@ export default defineEventHandler(async (event) => {
       const waIds = Array.from(new Set(realChats.map((c) => c.waId)))
       const chatContactRows = realChats
         .filter((chat) => !contactSeen.has(chat.waId))
-        .map((chat) => ({
-          clerk_org_id: account.clerk_org_id,
-          whatsapp_account_id: account.id,
-          wa_id: chat.waId,
-          phone: chat.phone,
-          name: chat.name,
-          updated_at: new Date().toISOString()
-        }))
+        .map((chat) => {
+          const row: {
+            clerk_org_id: string
+            whatsapp_account_id: string
+            wa_id: string
+            phone: string | null
+            updated_at: string
+            name?: string
+          } = {
+            clerk_org_id: account.clerk_org_id,
+            whatsapp_account_id: account.id,
+            wa_id: chat.waId,
+            phone: chat.phone,
+            updated_at: new Date().toISOString()
+          }
+          // Same guard as above — never overwrite an existing name with null.
+          if (chat.name) row.name = chat.name
+          return row
+        })
       if (chatContactRows.length > 0) {
         await supabase
           .from('contacts')

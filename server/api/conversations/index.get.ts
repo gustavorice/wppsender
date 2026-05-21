@@ -109,9 +109,86 @@ export default defineEventHandler(async (event) => {
       }
     })
 
+    // === DEFENSIVE CLIENT-FACING DEDUP ===
+    // Even with all the LID→BR resolution at write time, race conditions
+    // and historical duplicates can leave the inbox showing two rows for
+    // the same person (one with agenda name, one with WhatsApp pushName).
+    // Group by a normalized name key (first 3+ chars of the most reliable
+    // name we have), then keep the "best" representative: prefer rows whose
+    // wa_id is a real phone, then more messages, then has avatar.
+    const normalizeKey = (s: string | null | undefined): string => {
+      if (!s) return ''
+      // strip accents, lowercase, alpha-only, drop short words
+      const stripped = s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+      const cleaned = stripped.replace(/[^a-z0-9]+/g, ' ').trim()
+      const first = cleaned.split(' ').find((w) => w.length >= 3)
+      return first || ''
+    }
+    const isRealPhoneInline = (waId?: string | null): boolean => {
+      if (!waId) return false
+      if (waId.startsWith('55') && (waId.length === 12 || waId.length === 13)) return true
+      if (waId.startsWith('1') && waId.length === 11) return true
+      return false
+    }
+    const scoreConv = (c: Conversation): number => {
+      let s = 0
+      if (isRealPhoneInline(c.contact?.wa_id)) s += 10000
+      if (c.contact?.avatar_url) s += 100
+      if (c.contact?.name) s += 50
+      // boost by message count (already hydrated last_message proves >=1)
+      if (c.last_message) s += 1
+      return s
+    }
+    const groups = new Map<string, Conversation[]>()
+    const ungrouped: Conversation[] = []
+    for (const conv of hydrated) {
+      const key = normalizeKey(conv.contact?.name || conv.contact?.push_name)
+      if (!key) {
+        ungrouped.push(conv)
+        continue
+      }
+      const arr = groups.get(key) || []
+      arr.push(conv)
+      groups.set(key, arr)
+    }
+    const deduped: Conversation[] = [...ungrouped]
+    for (const [, arr] of groups) {
+      arr.sort((a, b) => scoreConv(b) - scoreConv(a))
+      const winner = arr[0]
+      if (!winner) continue
+      // If the winner has no last_message but a sibling does, borrow it so
+      // the inbox preview shows real activity instead of "Nova conversa".
+      if (!winner.last_message) {
+        for (const sib of arr) {
+          if (sib.last_message) {
+            winner.last_message = sib.last_message
+            const sibTs = sib.last_message_at ? new Date(sib.last_message_at).getTime() : 0
+            const winTs = winner.last_message_at ? new Date(winner.last_message_at).getTime() : 0
+            if (sibTs > winTs) winner.last_message_at = sib.last_message_at
+            break
+          }
+        }
+      }
+      deduped.push(winner)
+    }
+    // Re-sort the final list by last_message_at desc.
+    deduped.sort((a, b) => {
+      const aT = a.last_message_at ? new Date(a.last_message_at).getTime() : 0
+      const bT = b.last_message_at ? new Date(b.last_message_at).getTime() : 0
+      return bT - aT
+    })
+
     // 3. Contacts WITHOUT a conversation yet (so the inbox lists everyone
     // from the address book, not just people who already messaged you).
+    // Also exclude any contact whose name key matches a conversation we're
+    // already showing — they were dedup'd above and shouldn't reappear as
+    // orphans.
     const contactsWithConv = new Set(allConversations.map((c) => c.contact_id))
+    const groupedNameKeys = new Set<string>()
+    for (const c of deduped) {
+      const key = normalizeKey(c.contact?.name || c.contact?.push_name)
+      if (key) groupedNameKeys.add(key)
+    }
 
     let contactQuery = supabase
       .from('contacts')
@@ -127,14 +204,20 @@ export default defineEventHandler(async (event) => {
     const { data: contactRows, error: contactErr } = await contactQuery
     if (contactErr) throw contactErr
 
-    const orphanContacts = (contactRows || []).filter((c: any) => !isOwnerContact(c) && !contactsWithConv.has(c.id) && matchesSearch(c)) as Array<Contact & {
+    const orphanContacts = (contactRows || []).filter((c: any) => {
+      if (isOwnerContact(c)) return false
+      if (contactsWithConv.has(c.id)) return false
+      const key = normalizeKey(c.name || c.push_name)
+      if (key && groupedNameKeys.has(key)) return false
+      return matchesSearch(c)
+    }) as Array<Contact & {
       whatsapp_account?: Pick<WhatsAppAccount, 'id' | 'display_name' | 'phone_number' | 'status'> | null
     }>
 
     // Return both lists. Frontend renders conversations first, then a
     // "Outros contatos" section for the rest.
     return {
-      data: hydrated,
+      data: deduped,
       contacts_without_conversation: orphanContacts
     }
   } catch (error) {
