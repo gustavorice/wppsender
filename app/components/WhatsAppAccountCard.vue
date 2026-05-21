@@ -6,6 +6,7 @@ const props = defineProps<{
   canManage?: boolean
   mock?: boolean
   enriching?: boolean
+  reconciling?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -14,6 +15,7 @@ const emit = defineEmits<{
   remove: [id: string]
   simulate: [id: string]
   enrich: [id: string]
+  reconcile: [id: string]
 }>()
 
 function confirmRemove() {
@@ -101,6 +103,16 @@ const statusMap = computed(() => {
         @click="emit('enrich', account.id)"
       >
         Sincronizar fotos
+      </UButton>
+      <UButton
+        size="sm"
+        color="neutral"
+        variant="soft"
+        icon="i-lucide-list-restart"
+        :loading="reconciling"
+        @click="emit('reconcile', account.id)"
+      >
+        Reorganizar inbox
       </UButton>
       <UButton
         v-if="mock"

@@ -14,6 +14,7 @@ const {
   syncContacts,
   syncHistory,
   enrichAvatars,
+  reconcileInbox,
   accounts,
   loading
 } = useWhatsappAccounts()
@@ -22,6 +23,12 @@ const enrichingId = ref<string | null>(null)
 async function refreshAvatars(id: string) {
   enrichingId.value = id
   try { await enrichAvatars(id) } finally { enrichingId.value = null }
+}
+
+const reconcilingId = ref<string | null>(null)
+async function runReconcile(id: string) {
+  reconcilingId.value = id
+  try { await reconcileInbox(id) } finally { reconcilingId.value = null }
 }
 
 const syncedAccountIds = ref<Set<string>>(new Set())
@@ -124,11 +131,13 @@ onMounted(fetchAccounts)
         :can-manage="canManageWhatsapp"
         :mock="showDevTools"
         :enriching="enrichingId === account.id"
+        :reconciling="reconcilingId === account.id"
         @connect="retryConnect"
         @disconnect="disconnectAccount"
         @remove="removeAccountAction"
         @simulate="simulate"
         @enrich="refreshAvatars"
+        @reconcile="runReconcile"
       />
     </div>
 

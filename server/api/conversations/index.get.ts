@@ -171,8 +171,25 @@ export default defineEventHandler(async (event) => {
       }
       deduped.push(winner)
     }
+    // === HARD-BLOCK UNRESOLVABLE LID CONVERSATIONS ===
+    // A LID conversation is pure noise when:
+    //   - no agenda name AND no push_name (would render as "Contato")
+    //   - wa_id is not a real phone (still a raw LID identifier)
+    // We hide these from the inbox entirely — regardless of message direction.
+    // The user can rename them from the contacts page (or wait until the
+    // counter-party replies with a `senderPn`, at which point the webhook
+    // re-routes future messages to the BR contact). LIDs that have been
+    // manually named (`contact.name` or `push_name` set) stay visible.
+    const lidFiltered = deduped.filter((c) => {
+      const contact = c.contact
+      const hasName = Boolean(contact?.name) || Boolean(contact?.push_name)
+      if (hasName) return true
+      if (isRealPhoneInline(contact?.wa_id)) return true
+      return false
+    })
+
     // Re-sort the final list by last_message_at desc.
-    deduped.sort((a, b) => {
+    lidFiltered.sort((a, b) => {
       const aT = a.last_message_at ? new Date(a.last_message_at).getTime() : 0
       const bT = b.last_message_at ? new Date(b.last_message_at).getTime() : 0
       return bT - aT
@@ -185,7 +202,7 @@ export default defineEventHandler(async (event) => {
     // orphans.
     const contactsWithConv = new Set(allConversations.map((c) => c.contact_id))
     const groupedNameKeys = new Set<string>()
-    for (const c of deduped) {
+    for (const c of lidFiltered) {
       const key = normalizeKey(c.contact?.name || c.contact?.push_name)
       if (key) groupedNameKeys.add(key)
     }
@@ -217,7 +234,7 @@ export default defineEventHandler(async (event) => {
     // Return both lists. Frontend renders conversations first, then a
     // "Outros contatos" section for the rest.
     return {
-      data: deduped,
+      data: lidFiltered,
       contacts_without_conversation: orphanContacts
     }
   } catch (error) {

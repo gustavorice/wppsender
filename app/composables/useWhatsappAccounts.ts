@@ -129,6 +129,28 @@ export function useWhatsappAccounts() {
     }
   }
 
+  async function reconcileInbox(accountId: string) {
+    try {
+      const r = await $fetch<{ data: { backfilled: number; merged: number; deleted: number } }>('/api/whatsapp/reconcile-inbox', {
+        method: 'POST',
+        body: { whatsapp_account_id: accountId }
+      })
+      toast.add({
+        title: 'Inbox reorganizado',
+        description: `${r.data.backfilled} datas corrigidas, ${r.data.merged} contatos unificados, ${r.data.deleted} duplicatas removidas.`,
+        color: 'success'
+      })
+      return r.data
+    } catch (error) {
+      toast.add({
+        title: 'Falha ao reorganizar',
+        description: error instanceof Error ? error.message : 'Tente novamente.',
+        color: 'error'
+      })
+      return null
+    }
+  }
+
   async function simulateIncomingMessage(accountId: string) {
     const response = await $fetch('/api/dev/simulate-message', {
       method: 'POST',
@@ -162,6 +184,7 @@ export function useWhatsappAccounts() {
     simulateIncomingMessage,
     syncContacts,
     syncHistory,
-    enrichAvatars
+    enrichAvatars,
+    reconcileInbox
   }
 }

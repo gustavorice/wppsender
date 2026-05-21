@@ -542,6 +542,10 @@ async function persistChatsBatch(
     contactByWaId.set(row.wa_id as string, row.id as string)
   }
 
+  // Don't seed `last_message_at` from the chat snapshot — CHATS_SET arrives
+  // alongside MESSAGES_SET and can downgrade a newer timestamp the message
+  // path has already written. Upsert the conversation bare, then conditionally
+  // advance the timestamp per row.
   const conversationRows = normalized.flatMap((item) => {
     const contactId = contactByWaId.get(item.waId)
     if (!contactId) return []
@@ -551,7 +555,6 @@ async function persistChatsBatch(
         whatsapp_account_id: account.id,
         contact_id: contactId,
         status: 'open' as const,
-        last_message_at: item.lastMessageAt,
         updated_at: new Date().toISOString()
       }
     ]
@@ -561,12 +564,32 @@ async function persistChatsBatch(
     return { conversations: 0 }
   }
 
-  const { error: convError } = await supabase
+  const { data: upsertedConvs, error: convError } = await supabase
     .from('conversations')
     .upsert(conversationRows, { onConflict: 'clerk_org_id,whatsapp_account_id,contact_id' })
+    .select('id, contact_id')
 
   if (convError) {
     throw convError
+  }
+
+  const convIdByContactId = new Map<string, string>()
+  for (const row of upsertedConvs || []) {
+    convIdByContactId.set(row.contact_id as string, row.id as string)
+  }
+
+  for (const item of normalized) {
+    if (!item.lastMessageAt) continue
+    const contactId = contactByWaId.get(item.waId)
+    if (!contactId) continue
+    const convId = convIdByContactId.get(contactId)
+    if (!convId) continue
+    await supabase
+      .from('conversations')
+      .update({ last_message_at: item.lastMessageAt })
+      .eq('id', convId)
+      .eq('clerk_org_id', account.clerk_org_id)
+      .or(`last_message_at.is.null,last_message_at.lt.${item.lastMessageAt}`)
   }
 
   return { conversations: conversationRows.length }
@@ -758,6 +781,9 @@ async function persistSingleMessage(
     }
   }
 
+  // Don't write `last_message_at` from the upsert path — it can clobber a
+  // newer timestamp with a stale one when MESSAGES_SET replays old history.
+  // We set it only via the conditional update below.
   const { data: conversation, error: conversationError } = await supabase
     .from('conversations')
     .upsert(
@@ -766,7 +792,6 @@ async function persistSingleMessage(
         whatsapp_account_id: account.id,
         contact_id: contact.id,
         status: 'open',
-        last_message_at: message.sentAt,
         updated_at: new Date().toISOString()
       },
       { onConflict: 'clerk_org_id,whatsapp_account_id,contact_id' }
@@ -813,11 +838,15 @@ async function persistSingleMessage(
     savedMessage = existingMessage
   }
 
+  // Only advance `last_message_at` forward — never let an old MESSAGES_SET
+  // history event downgrade a newer timestamp. NULL counts as "older" so a
+  // fresh row gets seeded with the first message's timestamp.
   await supabase
     .from('conversations')
     .update({ last_message_at: message.sentAt })
     .eq('id', conversation.id)
     .eq('clerk_org_id', account.clerk_org_id)
+    .or(`last_message_at.is.null,last_message_at.lt.${message.sentAt}`)
 
   await supabase.from('message_events').insert({
     clerk_org_id: account.clerk_org_id,
@@ -1016,7 +1045,11 @@ async function persistMessagesBatch(
       conversationSeed.set(m.waId, m.sentAt)
     }
   }
-  const conversationRows = Array.from(conversationSeed.entries()).flatMap(([waId, lastAt]) => {
+  // Don't seed `last_message_at` via the bulk upsert — MESSAGES_SET replays
+  // historical messages, so the per-contact max here is often OLDER than
+  // what's already in the row. We upsert the bare conversation, then advance
+  // `last_message_at` only when strictly newer (or NULL).
+  const conversationRows = Array.from(conversationSeed.entries()).flatMap(([waId]) => {
     const cid = contactIdByWaId.get(waId)
     if (!cid) return []
     return [{
@@ -1024,7 +1057,6 @@ async function persistMessagesBatch(
       whatsapp_account_id: account.id,
       contact_id: cid,
       status: 'open' as const,
-      last_message_at: lastAt,
       updated_at: new Date().toISOString()
     }]
   })
@@ -1038,6 +1070,21 @@ async function persistMessagesBatch(
   const convIdByContactId = new Map<string, string>()
   for (const row of upsertedConvs || []) {
     convIdByContactId.set(row.contact_id as string, row.id as string)
+  }
+
+  // Now advance last_message_at conditionally per conversation — never
+  // downgrade an existing newer timestamp.
+  for (const [waId, lastAt] of conversationSeed.entries()) {
+    const cid = contactIdByWaId.get(waId)
+    if (!cid) continue
+    const convId = convIdByContactId.get(cid)
+    if (!convId) continue
+    await supabase
+      .from('conversations')
+      .update({ last_message_at: lastAt })
+      .eq('id', convId)
+      .eq('clerk_org_id', account.clerk_org_id)
+      .or(`last_message_at.is.null,last_message_at.lt.${lastAt}`)
   }
 
   // Step 3: bulk upsert messages (chunked to avoid payload size limits).

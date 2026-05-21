@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { contactDisplayName, messagePreview, avatarColor, contactInitial } from '~/utils/phone'
+
 definePageMeta({ layout: 'private' })
 
 const { fetchAccounts, accounts, connectedAccounts } = useWhatsappAccounts()
@@ -149,11 +151,28 @@ onMounted(async () => {
             v-for="conversation in recentConversations"
             :key="conversation.id"
             to="/messages"
-            class="grid gap-3 p-5 transition hover:bg-white sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
+            class="grid gap-3 p-5 transition hover:bg-white sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center"
           >
+            <div class="h-10 w-10 shrink-0 overflow-hidden rounded-full">
+              <img
+                v-if="conversation.contact?.avatar_url"
+                :src="conversation.contact.avatar_url"
+                :alt="contactDisplayName(conversation.contact)"
+                class="h-full w-full object-cover"
+                loading="lazy"
+                @error="(e: Event) => { const target = e.target as HTMLImageElement; target.style.display = 'none' }"
+              />
+              <div
+                v-else
+                class="flex h-full w-full items-center justify-center text-sm font-semibold"
+                :class="avatarColor(conversation.contact?.wa_id)"
+              >
+                {{ contactInitial(conversation.contact) }}
+              </div>
+            </div>
             <div class="min-w-0">
-              <p class="truncate text-sm font-semibold text-[#111111]">{{ conversation.contact?.name || conversation.contact?.phone || 'Contato' }}</p>
-              <p class="mt-1 truncate text-sm text-[#6b6258]">{{ conversation.last_message?.body || conversation.contact?.phone || 'Nova conversa' }}</p>
+              <p class="truncate text-sm font-semibold text-[#111111]">{{ contactDisplayName(conversation.contact) }}</p>
+              <p class="mt-1 truncate text-sm text-[#6b6258]">{{ messagePreview(conversation.last_message) }}</p>
             </div>
             <span class="text-xs text-[#7a7167]">
               {{ conversation.last_message_at ? new Date(conversation.last_message_at).toLocaleString('pt-BR') : '' }}
