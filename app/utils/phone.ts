@@ -89,3 +89,41 @@ export function contactPhoneLabel(c?: {
   if (formatted) return formatted
   return ''
 }
+
+// Deterministic background color for the fallback avatar — derived from a
+// stable string (wa_id) so a given contact always gets the same color, and
+// the palette stays in the WhatsApp-ish green/teal family while spanning
+// enough hues that adjacent contacts don't look identical.
+const AVATAR_PALETTE = [
+  'bg-emerald-100 text-emerald-800',
+  'bg-teal-100 text-teal-800',
+  'bg-sky-100 text-sky-800',
+  'bg-indigo-100 text-indigo-800',
+  'bg-violet-100 text-violet-800',
+  'bg-fuchsia-100 text-fuchsia-800',
+  'bg-rose-100 text-rose-800',
+  'bg-amber-100 text-amber-800',
+  'bg-lime-100 text-lime-800',
+  'bg-cyan-100 text-cyan-800'
+]
+
+export function avatarColor(seed?: string | null): string {
+  if (!seed) return AVATAR_PALETTE[0]!
+  let h = 0
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
+  return AVATAR_PALETTE[h % AVATAR_PALETTE.length]!
+}
+
+export function contactInitial(c?: {
+  name?: string | null
+  push_name?: string | null
+  phone?: string | null
+  wa_id?: string | null
+} | null): string {
+  if (!c) return '?'
+  const display = contactDisplayName(c)
+  if (!display || display === 'Contato') return '?'
+  // Skip non-letter prefixes (+, (, …) and grab the first alphanumeric.
+  const m = display.match(/[\p{L}\p{N}]/u)
+  return m ? m[0].toUpperCase() : '?'
+}

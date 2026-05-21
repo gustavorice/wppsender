@@ -1,15 +1,22 @@
 <script setup lang="ts">
-import type { Conversation } from '~~/types/entities'
-import { contactDisplayName, contactPhoneLabel, formatPhone } from '~/utils/phone'
+import type { Conversation, Contact } from '~~/types/entities'
+import { contactDisplayName, contactPhoneLabel, formatPhone, avatarColor, contactInitial } from '~/utils/phone'
+import { useConversationsStore } from '~~/stores/conversations'
 
 const props = defineProps<{
   conversation: Conversation | null
 }>()
 
+const toast = useToast()
+const conversationsStore = useConversationsStore()
+
+const editing = ref(false)
+const draft = ref('')
+const saving = ref(false)
+
 const waLink = computed(() => {
   const phone = props.conversation?.contact?.phone || props.conversation?.contact?.wa_id
   if (!phone) return null
-  // Don't generate wa.me links for LID identifiers — they would 404
   if (!formatPhone(phone)) return null
   return `https://wa.me/${phone.replace(/\D/g, '')}`
 })
@@ -25,13 +32,55 @@ const lastSeen = computed(() => {
     minute: '2-digit'
   })
 })
+
+function startEdit() {
+  draft.value = props.conversation?.contact?.name || ''
+  editing.value = true
+}
+
+async function saveName() {
+  const contactId = props.conversation?.contact?.id
+  if (!contactId) return
+  const name = draft.value.trim()
+  if (!name) {
+    editing.value = false
+    return
+  }
+  saving.value = true
+  try {
+    const response = await $fetch<{ data: Contact }>(`/api/contacts/${contactId}`, {
+      method: 'PATCH',
+      body: { name }
+    })
+    // Update the conversation in the store so the inbox reflects the new name
+    if (props.conversation) {
+      const merged = { ...props.conversation, contact: { ...(props.conversation.contact || {}), ...response.data } }
+      conversationsStore.upsertConversation(merged as Conversation)
+    }
+    editing.value = false
+    toast.add({ title: 'Contato renomeado', color: 'success' })
+  } catch (err) {
+    toast.add({
+      title: 'Nao foi possivel renomear',
+      description: err instanceof Error ? err.message : 'Tente novamente.',
+      color: 'error'
+    })
+  } finally {
+    saving.value = false
+  }
+}
+
+function cancelEdit() {
+  editing.value = false
+  draft.value = ''
+}
 </script>
 
 <template>
   <aside class="hidden h-full min-h-0 overflow-y-auto border-l border-slate-200 bg-white xl:block">
     <div v-if="conversation" class="p-4">
       <div class="flex flex-col items-center text-center">
-        <div class="h-20 w-20 overflow-hidden rounded-full bg-emerald-50">
+        <div class="h-20 w-20 overflow-hidden rounded-full">
           <img
             v-if="conversation.contact?.avatar_url"
             :src="conversation.contact.avatar_url"
@@ -40,18 +89,52 @@ const lastSeen = computed(() => {
             loading="lazy"
             @error="(e: Event) => { const target = e.target as HTMLImageElement; target.style.display = 'none' }"
           />
-          <div v-else class="flex h-full w-full items-center justify-center text-2xl font-semibold text-emerald-800">
-            {{ (conversation.contact?.name || conversation.contact?.phone || '?').slice(0, 1).toUpperCase() }}
+          <div
+            v-else
+            class="flex h-full w-full items-center justify-center text-2xl font-semibold"
+            :class="avatarColor(conversation.contact?.wa_id)"
+          >
+            {{ contactInitial(conversation.contact) }}
           </div>
         </div>
-        <h3 class="mt-3 truncate text-base font-semibold text-slate-950">
-          {{ contactDisplayName(conversation.contact) }}
-        </h3>
-        <p v-if="contactPhoneLabel(conversation.contact)" class="mt-0.5 text-xs text-slate-500">
+
+        <div v-if="!editing" class="mt-3 flex items-center gap-1">
+          <h3 class="truncate text-base font-semibold text-slate-950">
+            {{ contactDisplayName(conversation.contact) }}
+          </h3>
+          <button
+            type="button"
+            class="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            aria-label="Renomear contato"
+            @click="startEdit"
+          >
+            <UIcon name="i-lucide-pencil" class="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <div v-else class="mt-3 flex w-full items-center gap-1">
+          <UInput
+            v-model="draft"
+            size="sm"
+            class="flex-1"
+            :disabled="saving"
+            placeholder="Nome do contato"
+            autofocus
+            @keydown.enter="saveName"
+            @keydown.escape="cancelEdit"
+          />
+          <UButton size="xs" variant="solid" color="success" :loading="saving" @click="saveName">
+            <UIcon name="i-lucide-check" class="h-3.5 w-3.5" />
+          </UButton>
+          <UButton size="xs" variant="ghost" color="neutral" :disabled="saving" @click="cancelEdit">
+            <UIcon name="i-lucide-x" class="h-3.5 w-3.5" />
+          </UButton>
+        </div>
+
+        <p v-if="!editing && contactPhoneLabel(conversation.contact)" class="mt-0.5 text-xs text-slate-500">
           {{ contactPhoneLabel(conversation.contact) }}
         </p>
         <a
-          v-if="waLink"
+          v-if="waLink && !editing"
           :href="waLink"
           target="_blank"
           rel="noopener noreferrer"
@@ -69,7 +152,7 @@ const lastSeen = computed(() => {
         </div>
 
         <div>
-          <p class="text-[11px] font-medium uppercase tracking-wide text-slate-500">Número</p>
+          <p class="text-[11px] font-medium uppercase tracking-wide text-slate-500">Número conectado</p>
           <p class="mt-1 truncate text-sm text-slate-900">
             {{ conversation.whatsapp_account?.display_name || conversation.whatsapp_account?.phone_number || '—' }}
           </p>

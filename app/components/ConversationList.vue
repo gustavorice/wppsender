@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Contact, Conversation, WhatsAppAccount } from '~~/types/entities'
-import { contactDisplayName, contactPhoneLabel, formatPhone } from '~/utils/phone'
+import { contactDisplayName, contactPhoneLabel, formatPhone, avatarColor, contactInitial } from '~/utils/phone'
 
 type ContactStub = Contact & {
   whatsapp_account?: Pick<WhatsAppAccount, 'id' | 'display_name' | 'phone_number' | 'status'> | null
@@ -90,7 +90,7 @@ watch([search, whatsappAccountId], () => {
         :class="conversation.id === activeConversationId ? 'bg-emerald-50' : 'bg-white'"
         @click="emit('select', conversation.id)"
       >
-        <div class="h-10 w-10 shrink-0 overflow-hidden rounded-md bg-slate-100">
+        <div class="h-10 w-10 shrink-0 overflow-hidden rounded-full">
           <img
             v-if="conversation.contact?.avatar_url"
             :src="conversation.contact.avatar_url"
@@ -99,8 +99,12 @@ watch([search, whatsappAccountId], () => {
             loading="lazy"
             @error="(e: Event) => { const target = e.target as HTMLImageElement; target.style.display = 'none' }"
           />
-          <div v-else class="flex h-full w-full items-center justify-center text-sm font-semibold text-slate-700">
-            {{ (conversation.contact?.name || conversation.contact?.phone || '?').slice(0, 1).toUpperCase() }}
+          <div
+            v-else
+            class="flex h-full w-full items-center justify-center text-sm font-semibold"
+            :class="avatarColor(conversation.contact?.wa_id)"
+          >
+            {{ contactInitial(conversation.contact) }}
           </div>
         </div>
         <div class="min-w-0 flex-1">
@@ -114,9 +118,6 @@ watch([search, whatsappAccountId], () => {
           </div>
           <p class="mt-1 truncate text-xs text-slate-600">
             {{ conversation.last_message?.body || 'Nova conversa' }}
-          </p>
-          <p class="mt-1 truncate text-[11px] text-slate-500">
-            {{ conversation.whatsapp_account?.display_name || conversation.whatsapp_account?.phone_number || 'WhatsApp' }}
           </p>
         </div>
       </button>
@@ -133,7 +134,7 @@ watch([search, whatsappAccountId], () => {
         class="flex w-full items-start gap-3 border-b border-slate-100 px-3 py-3 text-left transition hover:bg-slate-50"
         @click="emit('selectContact', contact.id)"
       >
-        <div class="h-10 w-10 shrink-0 overflow-hidden rounded-md bg-slate-100">
+        <div class="h-10 w-10 shrink-0 overflow-hidden rounded-full">
           <img
             v-if="contact.avatar_url"
             :src="contact.avatar_url"
@@ -142,8 +143,12 @@ watch([search, whatsappAccountId], () => {
             loading="lazy"
             @error="(e: Event) => { const target = e.target as HTMLImageElement; target.style.display = 'none' }"
           />
-          <div v-else class="flex h-full w-full items-center justify-center text-sm font-semibold text-slate-700">
-            {{ (contact.name || contact.phone || '?').slice(0, 1).toUpperCase() }}
+          <div
+            v-else
+            class="flex h-full w-full items-center justify-center text-sm font-semibold"
+            :class="avatarColor(contact.wa_id)"
+          >
+            {{ contactInitial(contact) }}
           </div>
         </div>
         <div class="min-w-0 flex-1">

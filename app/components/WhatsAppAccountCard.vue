@@ -5,6 +5,7 @@ const props = defineProps<{
   account: WhatsAppAccount
   canManage?: boolean
   mock?: boolean
+  enriching?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -12,6 +13,7 @@ const emit = defineEmits<{
   disconnect: [id: string]
   remove: [id: string]
   simulate: [id: string]
+  enrich: [id: string]
 }>()
 
 function confirmRemove() {
@@ -89,16 +91,27 @@ const statusMap = computed(() => {
       </div>
     </div>
 
-    <UButton
-      v-if="mock && account.status === 'connected'"
-      class="mt-4"
-      size="sm"
-      color="neutral"
-      variant="soft"
-      icon="i-lucide-message-square-plus"
-      @click="emit('simulate', account.id)"
-    >
-      Simular mensagem
-    </UButton>
+    <div v-if="account.status === 'connected'" class="mt-4 flex flex-wrap gap-2">
+      <UButton
+        size="sm"
+        color="neutral"
+        variant="soft"
+        icon="i-lucide-image-down"
+        :loading="enriching"
+        @click="emit('enrich', account.id)"
+      >
+        Sincronizar fotos
+      </UButton>
+      <UButton
+        v-if="mock"
+        size="sm"
+        color="neutral"
+        variant="soft"
+        icon="i-lucide-message-square-plus"
+        @click="emit('simulate', account.id)"
+      >
+        Simular mensagem
+      </UButton>
+    </div>
   </div>
 </template>

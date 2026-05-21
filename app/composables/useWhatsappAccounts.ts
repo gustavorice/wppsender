@@ -90,6 +90,25 @@ export function useWhatsappAccounts() {
     }
   }
 
+  async function enrichAvatars(accountId: string) {
+    try {
+      const response = await $fetch<{ data: { scanned: number; attempted: number; updated: number } }>('/api/whatsapp/enrich-avatars', {
+        method: 'POST',
+        body: { whatsapp_account_id: accountId }
+      })
+      toast.add({
+        title: `${response.data.updated} fotos atualizadas`,
+        description: `${response.data.attempted} contatos consultados.`,
+        color: response.data.updated > 0 ? 'success' : 'info'
+      })
+      return response.data
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Falha ao buscar fotos.'
+      toast.add({ title: 'Sync de fotos falhou', description: message, color: 'warning' })
+      return null
+    }
+  }
+
   async function syncHistory(accountId: string) {
     try {
       const response = await $fetch<{ data: { synced: number; conversations: number; contacts: number } }>('/api/whatsapp/sync-history', {
@@ -142,6 +161,7 @@ export function useWhatsappAccounts() {
     removeAccount,
     simulateIncomingMessage,
     syncContacts,
-    syncHistory
+    syncHistory,
+    enrichAvatars
   }
 }

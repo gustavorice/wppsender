@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Conversation, Message } from '~~/types/entities'
-import { contactDisplayName, contactPhoneLabel } from '~/utils/phone'
+import { contactDisplayName, contactPhoneLabel, avatarColor, contactInitial } from '~/utils/phone'
 
 const props = defineProps<{
   conversation: Conversation | null
@@ -37,7 +37,7 @@ watch(
     <div class="border-b border-slate-200 bg-white px-4 py-3">
       <div v-if="conversation" class="flex items-center justify-between gap-3">
         <div class="flex min-w-0 items-center gap-3">
-          <div class="h-9 w-9 shrink-0 overflow-hidden rounded-md bg-slate-100">
+          <div class="h-9 w-9 shrink-0 overflow-hidden rounded-full">
             <img
               v-if="conversation.contact?.avatar_url"
               :src="conversation.contact.avatar_url"
@@ -46,8 +46,12 @@ watch(
               loading="lazy"
               @error="(e: Event) => { const target = e.target as HTMLImageElement; target.style.display = 'none' }"
             />
-            <div v-else class="flex h-full w-full items-center justify-center text-sm font-semibold text-slate-700">
-              {{ (conversation.contact?.name || conversation.contact?.phone || '?').slice(0, 1).toUpperCase() }}
+            <div
+              v-else
+              class="flex h-full w-full items-center justify-center text-sm font-semibold"
+              :class="avatarColor(conversation.contact?.wa_id)"
+            >
+              {{ contactInitial(conversation.contact) }}
             </div>
           </div>
           <div class="min-w-0">
