@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import type { Conversation, Message } from '~~/types/entities'
+import type { Conversation, Contact, Message } from '~~/types/entities'
 import { contactDisplayName, contactPhoneLabel, avatarColor, contactInitial } from '~/utils/phone'
+import { useConversationsStore } from '~~/stores/conversations'
 
 const props = defineProps<{
   conversation: Conversation | null
@@ -9,6 +10,64 @@ const props = defineProps<{
 }>()
 
 const threadEl = ref<HTMLElement | null>(null)
+const toast = useToast()
+const conversationsStore = useConversationsStore()
+
+const editingName = ref(false)
+const nameDraft = ref('')
+const savingName = ref(false)
+
+// Treat a contact as "unnamed" when neither the agenda name nor the WhatsApp
+// pushName is set. These are the LIDs Evolution couldn't identify (people
+// the user messaged who never replied with a known phone). The UI surfaces
+// an inline banner so the user can name them once and forget.
+const isUnnamed = computed(() => {
+  const c = props.conversation?.contact
+  if (!c) return false
+  return !c.name?.trim() && !c.push_name?.trim()
+})
+
+function startEditName() {
+  nameDraft.value = props.conversation?.contact?.name || ''
+  editingName.value = true
+}
+
+async function commitName() {
+  const id = props.conversation?.contact?.id
+  const name = nameDraft.value.trim()
+  if (!id || !name) {
+    editingName.value = false
+    return
+  }
+  savingName.value = true
+  try {
+    const response = await $fetch<{ data: Contact }>(`/api/contacts/${id}`, {
+      method: 'PATCH',
+      body: { name }
+    })
+    if (props.conversation) {
+      conversationsStore.upsertConversation({
+        ...props.conversation,
+        contact: { ...(props.conversation.contact || {}), ...response.data }
+      } as Conversation)
+    }
+    editingName.value = false
+    toast.add({ title: 'Contato renomeado', color: 'success' })
+  } catch (err) {
+    toast.add({
+      title: 'Falha ao renomear',
+      description: err instanceof Error ? err.message : 'Tente novamente.',
+      color: 'error'
+    })
+  } finally {
+    savingName.value = false
+  }
+}
+
+function cancelEditName() {
+  editingName.value = false
+  nameDraft.value = ''
+}
 
 const { isTyping, isRecording } = useTypingIndicator(
   () => props.conversation?.whatsapp_account_id ?? null,
@@ -35,7 +94,7 @@ watch(
 <template>
   <section class="flex h-full min-h-0 flex-col bg-slate-50">
     <div class="border-b border-slate-200 bg-white px-4 py-3">
-      <div v-if="conversation" class="flex items-center justify-between gap-3">
+      <div v-if="conversation" class="group flex items-center justify-between gap-3">
         <div class="flex min-w-0 items-center gap-3">
           <div class="h-9 w-9 shrink-0 overflow-hidden rounded-full">
             <img
@@ -54,10 +113,39 @@ watch(
               {{ contactInitial(conversation.contact) }}
             </div>
           </div>
-          <div class="min-w-0">
-            <h2 class="truncate text-sm font-semibold text-slate-950">
-              {{ contactDisplayName(conversation.contact) }}
-            </h2>
+          <div class="min-w-0 flex-1">
+            <div v-if="!editingName" class="flex items-center gap-1">
+              <h2 class="truncate text-sm font-semibold text-slate-950">
+                {{ contactDisplayName(conversation.contact) }}
+              </h2>
+              <button
+                type="button"
+                class="shrink-0 rounded p-0.5 text-slate-400 opacity-0 transition group-hover:opacity-100 hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Renomear contato"
+                title="Renomear contato"
+                @click="startEditName"
+              >
+                <UIcon name="i-lucide-pencil" class="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div v-else class="flex items-center gap-1">
+              <UInput
+                v-model="nameDraft"
+                size="xs"
+                class="min-w-0 flex-1"
+                :disabled="savingName"
+                placeholder="Nome do contato"
+                autofocus
+                @keydown.enter="commitName"
+                @keydown.escape="cancelEditName"
+              />
+              <UButton size="xs" color="success" :loading="savingName" @click="commitName">
+                <UIcon name="i-lucide-check" class="h-3.5 w-3.5" />
+              </UButton>
+              <UButton size="xs" variant="ghost" color="neutral" :disabled="savingName" @click="cancelEditName">
+                <UIcon name="i-lucide-x" class="h-3.5 w-3.5" />
+              </UButton>
+            </div>
             <p v-if="presenceLabel" class="truncate text-xs font-medium text-emerald-600">
               {{ presenceLabel }}
             </p>
@@ -103,7 +191,23 @@ watch(
       title="Nenhuma conversa selecionada"
       description="Escolha uma conversa na lista para ler e responder."
     />
-    <div v-else ref="threadEl" class="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-5">
+    <template v-else>
+      <div
+        v-if="isUnnamed && !editingName"
+        class="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900"
+      >
+        <div class="flex items-center justify-between gap-3">
+          <span class="flex items-center gap-1.5">
+            <UIcon name="i-lucide-info" class="h-3.5 w-3.5" />
+            Este contato não tem nome salvo. Renomeie para identificar fácil na lista.
+          </span>
+          <UButton size="xs" color="warning" variant="soft" icon="i-lucide-pencil" @click="startEditName">
+            Renomear
+          </UButton>
+        </div>
+      </div>
+
+      <div ref="threadEl" class="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-5">
       <div
         v-for="message in messages"
         :key="message.id"
@@ -130,7 +234,8 @@ watch(
           </p>
         </div>
       </div>
-    </div>
+      </div>
+    </template>
 
     <MessageComposer v-if="conversation" :conversation="conversation" />
   </section>
