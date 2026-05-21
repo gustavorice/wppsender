@@ -84,11 +84,21 @@ watch(
       >
         <div
           class="max-w-[78%] rounded-lg px-3 py-2 shadow-sm"
-          :class="message.direction === 'outbound' ? 'bg-emerald-600 text-white' : 'border border-slate-200 bg-white text-slate-900'"
+          :class="[
+            message.direction === 'outbound' ? 'bg-emerald-600 text-white' : 'border border-slate-200 bg-white text-slate-900',
+            message.status === 'pending' ? 'opacity-70' : '',
+            message.status === 'failed' ? 'border border-red-300 bg-red-50 text-red-900' : ''
+          ]"
         >
-          <p class="whitespace-pre-wrap text-sm leading-6">{{ message.body || '[midia]' }}</p>
-          <p class="mt-1 text-right text-[11px]" :class="message.direction === 'outbound' ? 'text-emerald-50' : 'text-slate-500'">
+          <p v-if="message.deleted_at" class="whitespace-pre-wrap text-sm italic leading-6 opacity-80">
+            <UIcon name="i-lucide-ban" class="-mt-0.5 mr-1 inline h-3.5 w-3.5" />Esta mensagem foi apagada
+          </p>
+          <p v-else class="whitespace-pre-wrap text-sm leading-6">{{ message.body || '[midia]' }}</p>
+          <p class="mt-1 flex items-center justify-end gap-1 text-[11px]" :class="message.direction === 'outbound' && !message.deleted_at && message.status !== 'failed' ? 'text-emerald-50' : 'text-slate-500'">
             {{ new Date(message.sent_at || message.created_at).toLocaleString('pt-BR', { hour: '2-digit', minute: '2-digit' }) }}
+            <UIcon v-if="message.direction === 'outbound' && message.status === 'pending'" name="i-lucide-clock-3" class="h-3 w-3" />
+            <UIcon v-else-if="message.direction === 'outbound' && message.status === 'failed'" name="i-lucide-alert-circle" class="h-3 w-3" />
+            <UIcon v-else-if="message.direction === 'outbound' && !message.deleted_at" name="i-lucide-check" class="h-3 w-3" />
           </p>
         </div>
       </div>

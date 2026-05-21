@@ -50,6 +50,7 @@ export interface Conversation {
 
 export type MessageDirection = 'inbound' | 'outbound'
 export type MessageType = 'text' | 'image' | 'audio' | 'video' | 'document' | 'unknown'
+export type MessageStatus = 'pending' | 'sent' | 'failed'
 
 export interface Message {
   id: string
@@ -60,10 +61,12 @@ export interface Message {
   wa_message_id: string | null
   direction: MessageDirection
   type: MessageType
+  status?: MessageStatus
   body: string | null
   media_url: string | null
   raw_payload: Record<string, unknown> | null
   sent_at: string | null
+  deleted_at?: string | null
   created_at: string
 }
 

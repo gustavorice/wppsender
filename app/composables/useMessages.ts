@@ -63,16 +63,42 @@ export function useMessages() {
 
   async function sendMessage(payload: { whatsapp_account_id: string; conversation_id: string; text: string }) {
     store.sending = true
+
+    // Optimistic insert: the message shows up in the thread immediately with
+    // status='pending'. When the server responds we swap it for the real row;
+    // if it fails we mark it 'failed' so the user can see + retry.
+    const localId = `local_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`
+    const now = new Date().toISOString()
+    const optimistic: Message = {
+      id: localId,
+      clerk_org_id: '',
+      whatsapp_account_id: payload.whatsapp_account_id,
+      conversation_id: payload.conversation_id,
+      contact_id: '',
+      wa_message_id: null,
+      direction: 'outbound',
+      type: 'text',
+      status: 'pending',
+      body: payload.text,
+      media_url: null,
+      raw_payload: null,
+      sent_at: now,
+      created_at: now
+    }
+    store.addOptimistic(optimistic)
+    conversationsStore.updateLastMessage(optimistic)
+
     try {
       const response = await $fetch<ApiItemResponse<Message>>('/api/whatsapp/send-message', {
         method: 'POST',
         body: payload
       })
 
-      store.addMessage(response.data)
+      store.replaceByLocalId(localId, response.data)
       conversationsStore.updateLastMessage(response.data)
       return response.data
     } catch (error) {
+      store.markFailed(localId, payload.conversation_id)
       toast.add({
         title: 'Nao foi possivel enviar',
         description: error instanceof Error ? error.message : 'Tente novamente em instantes.',

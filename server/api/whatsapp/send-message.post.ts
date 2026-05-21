@@ -74,6 +74,7 @@ export default defineEventHandler(async (event) => {
         wa_message_id: delivery.waMessageId || `out_${crypto.randomUUID()}`,
         direction: 'outbound',
         type: 'text',
+        status: 'sent',
         body: body.text,
         raw_payload: delivery.raw as Record<string, unknown>,
         sent_at: sentAt

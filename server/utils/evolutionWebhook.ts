@@ -1,6 +1,7 @@
 import type { MessageType, EvolutionWebhookPayload } from '~~/types/entities'
 import { getServerSupabase } from './supabase'
 import { fetchContactProfile } from './evolution'
+import { isAcceptableJid as _isAcceptableJid, isAcceptablePhone as _isAcceptablePhone, parseJid } from './jid'
 
 interface ParsedEvolutionEvent {
   instanceName: string | null
@@ -121,34 +122,8 @@ function normalizePhone(value: string): string {
   return value.replace(/@.+$/, '').replace(/\D/g, '')
 }
 
-// A real WhatsApp JID looks like "5519998151694@s.whatsapp.net".
-// Reject everything else — including:
-//   - @lid (WhatsApp Business virtual IDs)
-//   - @g.us, @broadcast, @newsletter, @bot
-//   - Strings without "@" at all (Evolution sometimes emits its DB primary
-//     key, a CUID like "cmpd63ciq00jus54cmhnstzwt", in fields where we
-//     would expect a JID — never accept those.)
-function isAcceptableJid(rawJid: string | null | undefined): boolean {
-  if (!rawJid) return false
-  const trimmed = rawJid.trim()
-  if (!trimmed || !trimmed.includes('@')) return false
-  if (trimmed.includes('@g.us') || trimmed.includes('@broadcast') || trimmed === 'status@broadcast') {
-    return false
-  }
-  if (trimmed.includes('@lid') || trimmed.includes('@newsletter') || trimmed.includes('@bot')) {
-    return false
-  }
-  return true
-}
-
-// Final safety: even with a clean JID, the resulting phone digits should look
-// like a real international phone number. Tightening to 10-13 covers BR
-// (12-13), US/CA (11), Mexico (12-13), Portugal (13), etc — and rejects the
-// short fragments LIDs and CUIDs tend to produce.
-function isAcceptablePhone(phone: string): boolean {
-  if (!phone) return false
-  return phone.length >= 10 && phone.length <= 13
-}
+const isAcceptableJid = _isAcceptableJid
+const isAcceptablePhone = _isAcceptablePhone
 
 // Inspect the raw payload to figure out if the original JID was @lid. Used
 // to drive the enrichment call shape (LID lookups go through different
@@ -156,15 +131,11 @@ function isAcceptablePhone(phone: string): boolean {
 function remoteJidIsLid(payload: any): boolean {
   const data = payload?.data
   const key = data?.key || data?.message?.key || {}
-  const remoteJid: string | undefined = key?.remoteJid || data?.remoteJid
-  if (!remoteJid) return false
-  if (remoteJid.includes('@lid')) {
-    // If we also have a real JID, prefer that (no LID treatment).
-    const alt: string | undefined = key?.remoteJidAlt
-    if (alt && alt.includes('@s.whatsapp.net')) return false
-    return true
-  }
-  return false
+  const p = parseJid(key?.remoteJid || data?.remoteJid)
+  if (!p || !p.isLid) return false
+  const alt = parseJid(key?.remoteJidAlt)
+  if (alt && alt.isPhone) return false
+  return true
 }
 
 // Evolution / WhatsApp Web fall back to the raw phone number as pushName /
@@ -724,20 +695,130 @@ async function persistMessagesBatch(
   records: any[],
   eventType: string
 ): Promise<{ messages: number }> {
-  let persisted = 0
+  // Two paths:
+  //  - MESSAGES_SET fires once on initial sync with the full history. Here we
+  //    pre-parse everything, upsert contacts and conversations in 2 bulk
+  //    queries, then bulk-upsert messages in chunks. NO Evolution enrichment
+  //    (that's what the manual `sync` button is for).
+  //  - Any other batch event keeps the per-message path so enrichment runs
+  //    in-band for the first message from a new contact.
+  if (eventType !== 'MESSAGES_SET') {
+    let persisted = 0
+    for (const record of records) {
+      const wrapped = { ...payload, event: eventType, data: record } as EvolutionWebhookPayload
+      const parsed = parseEvolutionWebhook(wrapped)
+      if (!parsed.message) continue
+      try {
+        await persistSingleMessage(wrapped, account, parsed)
+        persisted += 1
+      } catch {
+        // skip and continue — single bad record should not abort the batch
+      }
+    }
+    return { messages: persisted }
+  }
 
+  const supabase = getServerSupabase()
+  const parsedMessages: ParsedEvolutionMessage[] = []
   for (const record of records) {
     const wrapped = { ...payload, event: eventType, data: record } as EvolutionWebhookPayload
     const parsed = parseEvolutionWebhook(wrapped)
-    if (!parsed.message) {
+    if (parsed.message) parsedMessages.push(parsed.message)
+  }
+  if (parsedMessages.length === 0) return { messages: 0 }
+
+  // Step 1: bulk upsert contacts (dedup by wa_id, keep first non-null name).
+  const contactByWaId = new Map<string, { name: string | null; phone: string }>()
+  for (const m of parsedMessages) {
+    if (!contactByWaId.has(m.waId)) {
+      contactByWaId.set(m.waId, { name: m.direction === 'inbound' ? m.name : null, phone: m.phone })
+    }
+  }
+  const contactRows = Array.from(contactByWaId.entries()).map(([waId, info]) => ({
+    clerk_org_id: account.clerk_org_id,
+    whatsapp_account_id: account.id,
+    wa_id: waId,
+    phone: info.phone,
+    ...(info.name ? { push_name: info.name } : {}),
+    updated_at: new Date().toISOString()
+  }))
+
+  const { data: upsertedContacts, error: contactErr } = await supabase
+    .from('contacts')
+    .upsert(contactRows, { onConflict: 'clerk_org_id,whatsapp_account_id,wa_id' })
+    .select('id, wa_id')
+  if (contactErr) throw contactErr
+
+  const contactIdByWaId = new Map<string, string>()
+  for (const row of upsertedContacts || []) {
+    contactIdByWaId.set(row.wa_id as string, row.id as string)
+  }
+
+  // Step 2: bulk upsert conversations (one per contact).
+  const conversationSeed = new Map<string, string>() // waId -> max sentAt
+  for (const m of parsedMessages) {
+    const prev = conversationSeed.get(m.waId)
+    if (!prev || new Date(m.sentAt).getTime() > new Date(prev).getTime()) {
+      conversationSeed.set(m.waId, m.sentAt)
+    }
+  }
+  const conversationRows = Array.from(conversationSeed.entries()).flatMap(([waId, lastAt]) => {
+    const cid = contactIdByWaId.get(waId)
+    if (!cid) return []
+    return [{
+      clerk_org_id: account.clerk_org_id,
+      whatsapp_account_id: account.id,
+      contact_id: cid,
+      status: 'open' as const,
+      last_message_at: lastAt,
+      updated_at: new Date().toISOString()
+    }]
+  })
+
+  const { data: upsertedConvs, error: convErr } = await supabase
+    .from('conversations')
+    .upsert(conversationRows, { onConflict: 'clerk_org_id,whatsapp_account_id,contact_id' })
+    .select('id, contact_id')
+  if (convErr) throw convErr
+
+  const convIdByContactId = new Map<string, string>()
+  for (const row of upsertedConvs || []) {
+    convIdByContactId.set(row.contact_id as string, row.id as string)
+  }
+
+  // Step 3: bulk upsert messages (chunked to avoid payload size limits).
+  const messageRows = parsedMessages.flatMap((m) => {
+    const cid = contactIdByWaId.get(m.waId)
+    if (!cid) return []
+    const convId = convIdByContactId.get(cid)
+    if (!convId) return []
+    return [{
+      clerk_org_id: account.clerk_org_id,
+      whatsapp_account_id: account.id,
+      conversation_id: convId,
+      contact_id: cid,
+      wa_message_id: m.waMessageId,
+      direction: m.direction,
+      type: m.type,
+      status: 'sent' as const,
+      body: m.body,
+      media_url: m.mediaUrl,
+      sent_at: m.sentAt
+    }]
+  })
+
+  const chunkSize = 500
+  let persisted = 0
+  for (let i = 0; i < messageRows.length; i += chunkSize) {
+    const chunk = messageRows.slice(i, i + chunkSize)
+    const { error: msgErr } = await supabase
+      .from('messages')
+      .upsert(chunk, { onConflict: 'clerk_org_id,whatsapp_account_id,wa_message_id', ignoreDuplicates: true })
+    if (msgErr) {
+      console.error('[webhook] bulk insert chunk failed', msgErr)
       continue
     }
-    try {
-      await persistSingleMessage(wrapped, account, parsed)
-      persisted += 1
-    } catch (err) {
-      // skip and continue — batch import should not fail wholesale on a single bad record
-    }
+    persisted += chunk.length
   }
 
   return { messages: persisted }
@@ -807,6 +888,75 @@ export async function processEvolutionWebhook(payload: EvolutionWebhookPayload) 
     const list = extractList(record, 'messages')
     const result = await persistMessagesBatch(payload, account as WhatsAppAccountRow, list, eventType)
     return { ok: true, account_id: account.id, event_type: eventType, ...result }
+  }
+
+  // Counter-party deleted a message ("delete for everyone"). Soft-delete on
+  // our side so the UI can render "Esta mensagem foi apagada" instead of
+  // the original content.
+  if (eventType === 'MESSAGES_DELETE') {
+    const data = asRecord(record.data)
+    const candidates = Array.isArray(data.keys) ? data.keys : Array.isArray(data) ? data : [data.key || data]
+    const ids = candidates
+      .map((c: any) => pickString(c?.id, c?.key?.id, c?.messageId))
+      .filter(Boolean) as string[]
+    if (ids.length > 0) {
+      await supabase
+        .from('messages')
+        .update({ deleted_at: new Date().toISOString(), body: null, media_url: null })
+        .eq('clerk_org_id', account.clerk_org_id)
+        .eq('whatsapp_account_id', account.id)
+        .in('wa_message_id', ids)
+    }
+    return { ok: true, account_id: account.id, event_type: eventType, deleted: ids.length }
+  }
+
+  // Counter-party cleared a chat. Mark the conversation as closed; we keep
+  // the messages so the user can audit history.
+  if (eventType === 'CHATS_DELETE') {
+    const data = asRecord(record.data)
+    const list = Array.isArray(data) ? data : Array.isArray(data.chats) ? data.chats : [data]
+    const jids = list
+      .map((item: any) => pickString(item?.id, item?.remoteJid, item?.jid, item))
+      .map((j: string | null) => (j ? j.replace(/@.+$/, '').replace(/\D/g, '') : ''))
+      .filter((p: string) => p.length >= 5)
+    if (jids.length > 0) {
+      const { data: contacts } = await supabase
+        .from('contacts')
+        .select('id')
+        .eq('clerk_org_id', account.clerk_org_id)
+        .eq('whatsapp_account_id', account.id)
+        .in('wa_id', jids)
+      const contactIds = (contacts || []).map((c: any) => c.id)
+      if (contactIds.length > 0) {
+        await supabase
+          .from('conversations')
+          .update({ status: 'closed', updated_at: new Date().toISOString() })
+          .eq('clerk_org_id', account.clerk_org_id)
+          .eq('whatsapp_account_id', account.id)
+          .in('contact_id', contactIds)
+      }
+    }
+    return { ok: true, account_id: account.id, event_type: eventType, closed: jids.length }
+  }
+
+  // Outbound delivery / read receipt updates. We just bump status to 'sent'
+  // (reconciles any local optimistic 'pending' rows) and log the event.
+  if (eventType === 'MESSAGES_UPDATE') {
+    const data = asRecord(record.data)
+    const candidates = Array.isArray(data) ? data : Array.isArray(data.updates) ? data.updates : [data]
+    let updated = 0
+    for (const c of candidates) {
+      const wid = pickString(c?.key?.id, c?.id, c?.messageId)
+      if (!wid) continue
+      const { error } = await supabase
+        .from('messages')
+        .update({ status: 'sent' })
+        .eq('clerk_org_id', account.clerk_org_id)
+        .eq('whatsapp_account_id', account.id)
+        .eq('wa_message_id', wid)
+      if (!error) updated += 1
+    }
+    return { ok: true, account_id: account.id, event_type: eventType, updated }
   }
 
   // PRESENCE_UPDATE → ephemeral typing/recording broadcast via Supabase
