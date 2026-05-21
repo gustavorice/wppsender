@@ -259,11 +259,32 @@ function normalizeRawContact(record: any): EvolutionContact | null {
 export interface EvolutionContactProfile {
   name: string | null
   avatarUrl: string | null
+  pushName: string | null
 }
 
 // Quick per-contact lookup used to enrich a contact on first inbound message,
 // so the UI gets the real name + profile picture without waiting for the next
 // CONTACTS_SET batch. Works for both @s.whatsapp.net and @lid identifiers.
+//
+// Fallback order (all attempted in parallel, capped by `timeoutMs`):
+//   1. /chat/findContacts where { remoteJid: phone@s.whatsapp.net }
+//      → returns pushName + profilePicUrl from Evolution's DB
+//   2. /chat/findContacts where { remoteJid: phone@lid }
+//      → same shape but for the LID twin of the contact
+//   3. /chat/whatsappNumbers with the bare phone (skipped for LIDs)
+//      → returns the verifiedName / business name
+//   4. /chat/fetchProfilePictureUrl with the bare phone
+//      → returns just the avatar
+//   5. /chat/fetchProfilePictureUrl with phone@s.whatsapp.net
+//      → JID form, sometimes succeeds when bare phone doesn't
+//   6. /chat/fetchProfilePictureUrl with phone@lid
+//      → LID form
+//
+// We merge the results: first non-null `name` (the agenda name), first
+// non-null `pushName` (the WhatsApp display name set by the contact),
+// and first non-null `avatarUrl`. Returning pushName separately lets the
+// caller persist it to `contacts.push_name` even when there is no
+// agenda name available.
 export async function fetchContactProfile(
   instanceName: string,
   phone: string,
@@ -271,45 +292,52 @@ export async function fetchContactProfile(
 ): Promise<EvolutionContactProfile> {
   const config = getEvolutionConfig()
   if (config.isMock || !phone) {
-    return { name: null, avatarUrl: null }
+    return { name: null, avatarUrl: null, pushName: null }
   }
 
   const isLid = Boolean(options.isLid)
-  const timeoutMs = options.timeoutMs ?? 2500
-  const jidWithSuffix = isLid ? `${phone}@lid` : phone
-  const numberForPic = isLid ? `${phone}@lid` : phone
+  const timeoutMs = options.timeoutMs ?? 5000
 
   const ac = new AbortController()
   const timer = setTimeout(() => ac.abort(), timeoutMs)
 
-  async function tryFindContacts(): Promise<{ name: string | null; avatarUrl: string | null }> {
-    // findContacts where { remoteJid } returns pushName + profilePicUrl for
-    // both LID and real JIDs.
+  function sanitizeName(raw: string | null | undefined): string | null {
+    if (!raw) return null
+    const trimmed = raw.trim()
+    if (!trimmed) return null
+    if (trimmed.toLowerCase() === 'voce' || trimmed === 'Você') return null
+    const digits = trimmed.replace(/\D/g, '')
+    if (digits && (digits === phone || digits.startsWith(phone) || phone.startsWith(digits))) return null
+    return trimmed
+  }
+
+  async function tryFindContactsBy(remoteJid: string): Promise<{ name: string | null; pushName: string | null; avatarUrl: string | null }> {
     try {
       const res = await fetch(`${config.apiUrl}/chat/findContacts/${encodeURIComponent(instanceName)}`, {
         method: 'POST',
         headers: { apikey: config.apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ where: { remoteJid: jidWithSuffix } }),
+        body: JSON.stringify({ where: { remoteJid } }),
         signal: ac.signal
       })
-      if (!res.ok) return { name: null, avatarUrl: null }
-      const arr = (await res.json()) as Array<{ pushName?: string; name?: string; profilePicUrl?: string }>
+      if (!res.ok) return { name: null, pushName: null, avatarUrl: null }
+      const arr = (await res.json()) as Array<{
+        pushName?: string
+        name?: string
+        verifiedName?: string
+        businessName?: string
+        profilePicUrl?: string
+      }>
       const first = arr?.[0]
-      if (!first) return { name: null, avatarUrl: null }
-      const candidateRaw = (first.pushName || first.name || '').trim()
-      const digits = candidateRaw.replace(/\D/g, '')
-      let name: string | null = candidateRaw || null
-      if (!candidateRaw) {
-        name = null
-      } else if (digits && (digits === phone || digits.startsWith(phone) || phone.startsWith(digits))) {
-        name = null
-      } else if (candidateRaw.toLowerCase() === 'voce' || candidateRaw === 'Você') {
-        name = null
-      }
+      if (!first) return { name: null, pushName: null, avatarUrl: null }
+      // `name` field in Evolution's DB is the agenda/contact name (set by
+      // the user). `pushName` is the public WhatsApp display name set by
+      // the contact themselves. Keep them separate.
+      const name = sanitizeName(first.name || first.verifiedName || first.businessName)
+      const pushName = sanitizeName(first.pushName)
       const avatarUrl = first.profilePicUrl?.trim() || null
-      return { name, avatarUrl }
+      return { name, pushName, avatarUrl }
     } catch {
-      return { name: null, avatarUrl: null }
+      return { name: null, pushName: null, avatarUrl: null }
     }
   }
 
@@ -325,23 +353,18 @@ export async function fetchContactProfile(
       })
       if (!res.ok) return null
       const arr = (await res.json()) as Array<{ name?: string }>
-      const candidate = arr?.[0]?.name?.trim()
-      if (!candidate) return null
-      const digits = candidate.replace(/\D/g, '')
-      if (digits && (digits === phone || digits.startsWith(phone) || phone.startsWith(digits))) return null
-      if (candidate.toLowerCase() === 'voce' || candidate === 'Você') return null
-      return candidate
+      return sanitizeName(arr?.[0]?.name)
     } catch {
       return null
     }
   }
 
-  async function tryPicture(): Promise<string | null> {
+  async function tryPictureFor(numberOrJid: string): Promise<string | null> {
     try {
       const res = await fetch(`${config.apiUrl}/chat/fetchProfilePictureUrl/${encodeURIComponent(instanceName)}`, {
         method: 'POST',
         headers: { apikey: config.apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ number: numberForPic }),
+        body: JSON.stringify({ number: numberOrJid }),
         signal: ac.signal
       })
       if (!res.ok) return null
@@ -352,12 +375,24 @@ export async function fetchContactProfile(
     }
   }
 
-  const [findRes, numbersName, pictureUrl] = await Promise.all([tryFindContacts(), tryNumbers(), tryPicture()])
+  const [findPhone, findLid, numbersName, picBare, picPhoneJid, picLidJid] = await Promise.all([
+    tryFindContactsBy(`${phone}@s.whatsapp.net`),
+    tryFindContactsBy(`${phone}@lid`),
+    tryNumbers(),
+    tryPictureFor(phone),
+    tryPictureFor(`${phone}@s.whatsapp.net`),
+    isLid ? tryPictureFor(`${phone}@lid`) : Promise.resolve(null)
+  ])
   clearTimeout(timer)
 
-  const name = findRes.name || numbersName || null
-  const avatarUrl = findRes.avatarUrl || pictureUrl || null
-  return { name, avatarUrl }
+  // Merge: first non-null wins. The findContacts endpoints are queried for
+  // both the @s.whatsapp.net and @lid twins because Evolution stores them
+  // as separate rows.
+  const name = findPhone.name || findLid.name || numbersName || null
+  const pushName = findPhone.pushName || findLid.pushName || null
+  const avatarUrl =
+    findPhone.avatarUrl || findLid.avatarUrl || picBare || picPhoneJid || picLidJid || null
+  return { name, avatarUrl, pushName }
 }
 
 export interface EvolutionChat {

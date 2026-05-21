@@ -558,14 +558,28 @@ async function persistSingleMessage(
   const message = parsed.message
   const supabase = getServerSupabase()
 
-  // === LID → BR resolution ===
-  // If the incoming wa_id is a LID identifier and we have it mapped to a
-  // real BR contact (via contacts.lid_alt populated by deep-merge or by a
-  // prior remoteJidAlt), redirect the message to the real contact instead
-  // of creating a duplicate LID-only row.
+  // === LID → BR resolution (multi-step) ===
+  // The canonical contacts.wa_id is ALWAYS the real phone when known. LIDs
+  // ride along on contacts.lid_alt of the real-phone row — never as a
+  // separate row's wa_id. Before persisting we try multiple resolution
+  // paths so a known counter-party isn't duplicated as a LID row:
+  //   1. Skip resolution entirely when waId is already a real phone.
+  //   2. Match against contacts.lid_alt (the canonical mapping).
+  //   3. Match against contacts.push_name (case-insensitive trim) for
+  //      non-trivial names. Catches the case where the same person exists
+  //      under BR and LID forms in the agenda.
+  //   4. If the raw payload has key.remoteJidAlt ending in @s.whatsapp.net,
+  //      promote that phone to wa_id directly even when the BR contact
+  //      doesn't exist yet.
+  // When a resolution succeeds, we always remember it by writing the LID
+  // onto contacts.lid_alt so the lookup is O(1) next time.
   let resolvedWaId = message.waId
   let resolvedPhone = message.phone
-  if (message.waId && !(message.waId.startsWith('55') && message.waId.length >= 12)) {
+  let learnedLidFromResolution: string | null = null
+
+  // Step 1: already canonical — no resolution needed.
+  if (!isRealPhone(message.waId)) {
+    // Step 2: contacts.lid_alt lookup.
     const { data: lidMatch } = await supabase
       .from('contacts')
       .select('wa_id, phone')
@@ -576,6 +590,54 @@ async function persistSingleMessage(
     if (lidMatch?.wa_id) {
       resolvedWaId = lidMatch.wa_id as string
       resolvedPhone = (lidMatch.phone as string) || resolvedWaId
+    } else {
+      // Step 3: push_name fallback — only when the name is non-trivial.
+      const candidateName = message.name?.trim() || ''
+      const nameDigits = candidateName.replace(/\D/g, '')
+      const trivialName =
+        candidateName.length < 3 ||
+        candidateName.toLowerCase() === 'voce' ||
+        candidateName === 'Você' ||
+        (nameDigits.length > 0 && nameDigits === candidateName.replace(/\s+/g, ''))
+      if (!trivialName) {
+        const { data: nameMatches } = await supabase
+          .from('contacts')
+          .select('wa_id, phone, name, push_name')
+          .eq('clerk_org_id', account.clerk_org_id)
+          .eq('whatsapp_account_id', account.id)
+          .or(`push_name.ilike.${candidateName},name.ilike.${candidateName}`)
+          .limit(10)
+        const lower = candidateName.toLowerCase()
+        const real = (nameMatches || []).find((row: any) => {
+          if (!isRealPhone(row.wa_id as string)) return false
+          const rowPush = String(row.push_name || '').trim().toLowerCase()
+          const rowName = String(row.name || '').trim().toLowerCase()
+          return rowPush === lower || rowName === lower
+        })
+        if (real?.wa_id) {
+          resolvedWaId = real.wa_id as string
+          resolvedPhone = (real.phone as string) || resolvedWaId
+          learnedLidFromResolution = message.waId
+        }
+      }
+
+      // Step 4: raw payload's key.remoteJidAlt — promote the phone directly.
+      if (!isRealPhone(resolvedWaId)) {
+        try {
+          const rawKey = ((payload as any)?.data?.key || {}) as Record<string, unknown>
+          const rawAlt = String(rawKey.remoteJidAlt || '')
+          if (rawAlt.endsWith('@s.whatsapp.net')) {
+            const altPhone = rawAlt.replace('@s.whatsapp.net', '').replace(/\D/g, '')
+            if (isRealPhone(altPhone)) {
+              resolvedWaId = altPhone
+              resolvedPhone = altPhone
+              learnedLidFromResolution = message.waId
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      }
     }
   }
 
@@ -603,7 +665,8 @@ async function persistSingleMessage(
   // Learn LID↔phone associations when the webhook gives us both. This is
   // the cleanest way to keep the mapping fresh: every time a message
   // contains BOTH the real JID and the original @lid, we save the LID on
-  // the real contact's row.
+  // the real contact's row. We also remember LIDs we just resolved via
+  // push_name / remoteJidAlt so future messages skip the lookup entirely.
   let learnedLidAlt: string | null = null
   try {
     const rawKey = ((payload as any)?.data?.key || {}) as Record<string, unknown>
@@ -614,6 +677,9 @@ async function persistSingleMessage(
     }
   } catch {
     /* ignore */
+  }
+  if (!learnedLidAlt && learnedLidFromResolution) {
+    learnedLidAlt = learnedLidFromResolution
   }
 
   // Only set push_name from inbound messages — outbound pushName is "Você"
@@ -773,13 +839,15 @@ async function persistMessagesBatch(
   }
 
   const supabase = getServerSupabase()
-  const parsedMessages: ParsedEvolutionMessage[] = []
+  // Keep raw record paired with parsed message — we need it later to
+  // inspect key.remoteJidAlt during LID resolution.
+  const parsedPairs: Array<{ message: ParsedEvolutionMessage; record: any; lidLearned?: string | null }> = []
   for (const record of records) {
     const wrapped = { ...payload, event: eventType, data: record } as EvolutionWebhookPayload
     const parsed = parseEvolutionWebhook(wrapped)
-    if (parsed.message) parsedMessages.push(parsed.message)
+    if (parsed.message) parsedPairs.push({ message: parsed.message, record })
   }
-  if (parsedMessages.length === 0) return { messages: 0 }
+  if (parsedPairs.length === 0) return { messages: 0 }
 
   // === LID → BR resolution (batch) ===
   // Collect every wa_id that isn't a real phone, look them up against
@@ -788,22 +856,91 @@ async function persistMessagesBatch(
   // bulk equivalent of what persistSingleMessage does per-message and is
   // critical to avoid recreating LID-only contacts on every history replay.
   const lidsToResolve = Array.from(
-    new Set(parsedMessages.filter((m) => !isRealPhone(m.waId)).map((m) => m.waId))
+    new Set(parsedPairs.filter((p) => !isRealPhone(p.message.waId)).map((p) => p.message.waId))
   )
   const lidMap = await resolveLidsToBr(account, lidsToResolve)
+
+  // === Augment 1: key.remoteJidAlt → promote real phone ===
+  // For any unresolved LID whose raw key carries a @s.whatsapp.net alt JID,
+  // promote the real phone directly. This is the most reliable signal
+  // because it comes straight from the Baileys payload.
+  for (const pair of parsedPairs) {
+    const m = pair.message
+    if (isRealPhone(m.waId) || lidMap.has(m.waId)) continue
+    const rawKey = (pair.record?.key || pair.record?.message?.key || {}) as Record<string, unknown>
+    const rawAlt = String(rawKey.remoteJidAlt || '')
+    if (rawAlt.endsWith('@s.whatsapp.net')) {
+      const altPhone = rawAlt.replace('@s.whatsapp.net', '').replace(/\D/g, '')
+      if (isRealPhone(altPhone)) {
+        lidMap.set(m.waId, { waId: altPhone, phone: altPhone })
+        pair.lidLearned = m.waId
+      }
+    }
+  }
+
+  // === Augment 2: push_name → BR contact ===
+  // For LIDs still unresolved, try the message's pushName against existing
+  // contacts.push_name / contacts.name. Only consider non-trivial names
+  // (>= 3 chars, not Você, not all digits) and only match BR contacts.
+  const stillUnresolved = parsedPairs.filter(
+    (p) => !isRealPhone(p.message.waId) && !lidMap.has(p.message.waId)
+  )
+  const nameCandidates = new Set<string>()
+  for (const pair of stillUnresolved) {
+    const name = pair.message.name?.trim() || ''
+    const nameDigits = name.replace(/\D/g, '')
+    if (name.length < 3) continue
+    if (name.toLowerCase() === 'voce' || name === 'Você') continue
+    if (nameDigits === name.replace(/\s+/g, '') && nameDigits.length > 0) continue
+    nameCandidates.add(name)
+  }
+  if (nameCandidates.size > 0) {
+    const namesArr = Array.from(nameCandidates)
+    const { data: nameRows } = await supabase
+      .from('contacts')
+      .select('wa_id, phone, name, push_name')
+      .eq('clerk_org_id', account.clerk_org_id)
+      .eq('whatsapp_account_id', account.id)
+      .or(`push_name.in.(${namesArr.map((n) => `"${n.replace(/"/g, '\\"')}"`).join(',')}),name.in.(${namesArr.map((n) => `"${n.replace(/"/g, '\\"')}"`).join(',')})`)
+    const byNameLower = new Map<string, { waId: string; phone: string }>()
+    for (const row of nameRows || []) {
+      if (!isRealPhone((row as any).wa_id as string)) continue
+      const push = String((row as any).push_name || '').trim().toLowerCase()
+      const nm = String((row as any).name || '').trim().toLowerCase()
+      const entry = { waId: (row as any).wa_id as string, phone: ((row as any).phone as string) || ((row as any).wa_id as string) }
+      if (push && !byNameLower.has(push)) byNameLower.set(push, entry)
+      if (nm && !byNameLower.has(nm)) byNameLower.set(nm, entry)
+    }
+    for (const pair of stillUnresolved) {
+      const lower = (pair.message.name || '').trim().toLowerCase()
+      if (!lower) continue
+      const hit = byNameLower.get(lower)
+      if (hit) {
+        lidMap.set(pair.message.waId, hit)
+        pair.lidLearned = pair.message.waId
+      }
+    }
+  }
 
   // Rewrite resolved LIDs in-place; drop outbound-only LID messages whose
   // contact does not exist yet (they would create pure-noise rows: no name,
   // no avatar, no counter-party identity). Inbound LIDs without a match are
   // kept — they represent real people we just haven't merged yet.
   const usable: ParsedEvolutionMessage[] = []
-  for (const m of parsedMessages) {
+  const lidAltByWaId = new Map<string, string>()
+  for (const pair of parsedPairs) {
+    const m = pair.message
     if (isRealPhone(m.waId)) {
       usable.push(m)
       continue
     }
     const resolved = lidMap.get(m.waId)
     if (resolved) {
+      // Remember the LID→BR mapping so we can persist it onto the BR
+      // contact row after resolution (skips future lookups).
+      if (pair.lidLearned) {
+        lidAltByWaId.set(resolved.waId, pair.lidLearned)
+      }
       m.waId = resolved.waId
       m.phone = resolved.phone
       usable.push(m)
@@ -830,6 +967,7 @@ async function persistMessagesBatch(
     wa_id: waId,
     phone: info.phone,
     ...(info.name ? { push_name: info.name } : {}),
+    ...(lidAltByWaId.get(waId) ? { lid_alt: lidAltByWaId.get(waId) } : {}),
     updated_at: new Date().toISOString()
   }))
 

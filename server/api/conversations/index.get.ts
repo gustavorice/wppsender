@@ -12,6 +12,33 @@ export default defineEventHandler(async (event) => {
     const search = typeof query.search === 'string' ? query.search.trim() : ''
     const supabase = getServerSupabase()
 
+    // Load the user's own phone numbers (digits-only) so we can filter the
+    // owner out of the inbox. WhatsApp gives every account a self-chat that
+    // would otherwise show up as a duplicate conversation. We collect the
+    // phone_number from every whatsapp_account row in this org because a
+    // tenant may have several connected numbers.
+    let accountQuery = supabase
+      .from('whatsapp_accounts')
+      .select('phone_number')
+      .eq('clerk_org_id', tenant.orgId)
+    if (whatsappAccountId) {
+      accountQuery = accountQuery.eq('id', whatsappAccountId)
+    }
+    const { data: accountRows } = await accountQuery
+    const ownerPhones = new Set<string>()
+    for (const row of accountRows || []) {
+      const raw = String((row as any).phone_number || '').replace(/\D/g, '')
+      if (raw) ownerPhones.add(raw)
+    }
+    const isOwnerContact = (c: { wa_id?: string | null; name?: string | null } | null | undefined): boolean => {
+      if (!c) return false
+      const digits = String(c.wa_id || '').replace(/\D/g, '')
+      if (digits && ownerPhones.has(digits)) return true
+      const name = String(c.name || '').trim()
+      if (name.startsWith('Você') || name.toLowerCase().startsWith('voce')) return true
+      return false
+    }
+
     // 1. Conversations with last message
     let request = supabase
       .from('conversations')
@@ -27,7 +54,7 @@ export default defineEventHandler(async (event) => {
     const { data, error } = await request
     if (error) throw error
 
-    const allConversations = (data || []) as unknown as Conversation[]
+    const allConversations = ((data || []) as unknown as Conversation[]).filter((c) => !isOwnerContact(c.contact))
 
     const term = search.toLowerCase()
     const matchesSearch = (c: Pick<Contact, 'name' | 'phone' | 'wa_id'> | null | undefined): boolean => {
@@ -100,7 +127,7 @@ export default defineEventHandler(async (event) => {
     const { data: contactRows, error: contactErr } = await contactQuery
     if (contactErr) throw contactErr
 
-    const orphanContacts = (contactRows || []).filter((c: any) => !contactsWithConv.has(c.id) && matchesSearch(c)) as Array<Contact & {
+    const orphanContacts = (contactRows || []).filter((c: any) => !isOwnerContact(c) && !contactsWithConv.has(c.id) && matchesSearch(c)) as Array<Contact & {
       whatsapp_account?: Pick<WhatsAppAccount, 'id' | 'display_name' | 'phone_number' | 'status'> | null
     }>
 

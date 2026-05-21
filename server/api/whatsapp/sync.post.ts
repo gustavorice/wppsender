@@ -39,18 +39,35 @@ export default defineEventHandler(async (event) => {
     ])
 
     // Cross-reference: for each contact returned by Evolution, classify
-    // BR/real vs LID and pair them when pushName matches. The resulting
-    // contact rows always use the real BR phone as wa_id; the LID is stored
-    // on contacts.lid_alt so the webhook can map future @lid messages back
-    // to the real contact without creating duplicates.
+    // BR/real vs LID and pair them when pushName OR avatar matches. The
+    // resulting contact rows always use the real BR phone as wa_id; the LID
+    // is stored on contacts.lid_alt so the webhook can map future @lid
+    // messages back to the real contact without creating duplicates.
     const norm = (s: string | null | undefined) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ')
 
+    // Avatar URLs from WhatsApp's CDN look like
+    // `.../t/v/<crypted>/<id>_<id>_<n>.jpg?...`. Two contacts sharing the
+    // SAME filename portion are almost certainly the same person — WhatsApp
+    // gives every profile a stable image id. We strip the query string and
+    // the path prefix, then use the basename as the join key.
+    const avatarKey = (url: string | null | undefined): string | null => {
+      if (!url) return null
+      const noQuery = url.split('?')[0] || ''
+      const lastSlash = noQuery.lastIndexOf('/')
+      const file = lastSlash >= 0 ? noQuery.slice(lastSlash + 1) : noQuery
+      if (!file || file.length < 6) return null
+      return file.toLowerCase()
+    }
+
     const realByName = new Map<string, typeof evolutionContacts[number]>()
+    const realByAvatar = new Map<string, typeof evolutionContacts[number]>()
     const lidsByName: Array<typeof evolutionContacts[number]> = []
     for (const c of evolutionContacts) {
       if (isRealPhone(c.waId)) {
         const key = norm(c.name || c.pushName)
         if (key && !realByName.has(key)) realByName.set(key, c)
+        const avatar = avatarKey(c.avatarUrl)
+        if (avatar && !realByAvatar.has(avatar)) realByAvatar.set(avatar, c)
       } else {
         lidsByName.push(c)
       }
@@ -59,24 +76,34 @@ export default defineEventHandler(async (event) => {
     const lidAltByRealWaId = new Map<string, string>()
     const consumedLidWaIds = new Set<string>()
     for (const lid of lidsByName) {
-      const lidName = norm(lid.name || lid.pushName)
-      if (!lidName) continue
-      // exact then prefix in both directions
       let match: typeof evolutionContacts[number] | undefined
-      if (realByName.has(lidName)) {
-        match = realByName.get(lidName)
-      } else {
-        for (const [k, real] of realByName.entries()) {
-          if (k.length < 4 || lidName.length < 4) continue
-          if (k.startsWith(lidName) || lidName.startsWith(k) || k.includes(lidName) || lidName.includes(k)) {
-            const ratio = Math.min(k.length, lidName.length) / Math.max(k.length, lidName.length)
-            if (ratio >= 0.3) {
-              match = real
-              break
+
+      // Avatar match first — strongest signal (file ids are globally unique).
+      const lidAvatar = avatarKey(lid.avatarUrl)
+      if (lidAvatar) {
+        match = realByAvatar.get(lidAvatar)
+      }
+
+      // Fall back to name-based matching when avatar didn't resolve.
+      const lidName = match ? '' : norm(lid.name || lid.pushName)
+      if (!match && lidName) {
+        // exact then prefix in both directions
+        if (realByName.has(lidName)) {
+          match = realByName.get(lidName)
+        } else {
+          for (const [k, real] of realByName.entries()) {
+            if (k.length < 4 || lidName.length < 4) continue
+            if (k.startsWith(lidName) || lidName.startsWith(k) || k.includes(lidName) || lidName.includes(k)) {
+              const ratio = Math.min(k.length, lidName.length) / Math.max(k.length, lidName.length)
+              if (ratio >= 0.3) {
+                match = real
+                break
+              }
             }
           }
         }
       }
+
       if (match) {
         lidAltByRealWaId.set(match.waId, lid.waId)
         consumedLidWaIds.add(lid.waId)

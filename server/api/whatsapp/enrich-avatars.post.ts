@@ -10,11 +10,17 @@ const schema = z.object({
   whatsapp_account_id: z.string().uuid()
 })
 
-// Bulk-fetch profile pictures for every contact that doesn't have one yet.
-// Used when Evolution's initial findContacts response had profilePicUrl=null
-// for most contacts (very common when the WhatsApp account is freshly
-// connected — Baileys hasn't lazy-loaded the pics yet). Runs in parallel
-// with a small concurrency limit so we don't slam Evolution's API.
+// Bulk-fetch profile pictures + display names for every contact that doesn't
+// have one yet. Used when Evolution's initial findContacts response had
+// profilePicUrl=null for most contacts (very common when the WhatsApp account
+// is freshly connected — Baileys hasn't lazy-loaded the pics yet). Runs in
+// parallel with a small concurrency limit so we don't slam Evolution's API.
+//
+// Writes:
+//   - `avatar_url` when the row had none and Evolution returned one
+//   - `push_name`  when the row had no agenda name AND Evolution returned a
+//                  usable pushName (non-Você, non-digits). Never writes to
+//                  `name` — that is reserved for agenda contacts.
 export default defineEventHandler(async (event) => {
   try {
     await rateLimit(event, 'whatsapp:enrich-avatars', 2, 60)
@@ -31,33 +37,62 @@ export default defineEventHandler(async (event) => {
     if (accountErr || !account) throw apiError(404, 'Conta nao encontrada.')
     if (account.status !== 'connected') throw apiError(409, 'Conecte o numero antes de buscar fotos.')
 
-    // Pull contacts that are missing avatar OR are LIDs with no name (so we
-    // can also try to learn their pushName via the lookup endpoints).
+    // Pull contacts that are missing avatar OR have no name AND no push_name —
+    // those are the ones the UI is rendering as "Contato" / placeholder.
     const { data: contacts, error: listErr } = await supabase
       .from('contacts')
-      .select('id, wa_id, phone, name, avatar_url')
+      .select('id, wa_id, phone, name, push_name, avatar_url')
       .eq('clerk_org_id', tenant.orgId)
       .eq('whatsapp_account_id', account.id)
-      .or('avatar_url.is.null,name.is.null')
+      .or('avatar_url.is.null,name.is.null,push_name.is.null')
       .limit(1000)
     if (listErr) throw listErr
 
     const targets = contacts || []
-    const concurrency = 5
-    let updated = 0
+    const concurrency = 8
     let attempted = 0
+    let updatedAvatars = 0
+    let updatedPushnames = 0
 
-    async function processOne(c: { id: string; wa_id: string; phone: string | null; name: string | null; avatar_url: string | null }) {
+    async function processOne(c: {
+      id: string
+      wa_id: string
+      phone: string | null
+      name: string | null
+      push_name: string | null
+      avatar_url: string | null
+    }) {
       attempted += 1
       const isLid = !isRealPhone(c.wa_id)
       const profile = await fetchContactProfile(account.instance_name, c.phone || c.wa_id, {
         isLid,
-        timeoutMs: 4000
+        timeoutMs: 5000
       }).catch(() => null)
       if (!profile) return
+
       const patch: Record<string, unknown> = {}
-      if (!c.avatar_url && profile.avatarUrl) patch.avatar_url = profile.avatarUrl
-      if (!c.name && profile.name) patch.name = profile.name
+      let didAvatar = false
+      let didPushname = false
+
+      if (!c.avatar_url && profile.avatarUrl) {
+        patch.avatar_url = profile.avatarUrl
+        didAvatar = true
+      }
+
+      // Persist agenda name when we learned one and the row was empty. This
+      // is rare from Evolution (findContacts mostly returns pushName), but
+      // worth handling.
+      if (!c.name && profile.name) {
+        patch.name = profile.name
+      }
+
+      // Persist pushName separately so the UI can fall back to it via
+      // contactDisplayName() while keeping `name` reserved for agenda names.
+      if (!c.push_name && profile.pushName) {
+        patch.push_name = profile.pushName
+        didPushname = true
+      }
+
       if (Object.keys(patch).length === 0) return
       patch.updated_at = new Date().toISOString()
       const { error } = await supabase
@@ -65,7 +100,10 @@ export default defineEventHandler(async (event) => {
         .update(patch)
         .eq('id', c.id)
         .eq('clerk_org_id', tenant.orgId)
-      if (!error) updated += 1
+      if (!error) {
+        if (didAvatar) updatedAvatars += 1
+        if (didPushname) updatedPushnames += 1
+      }
     }
 
     // Manual semaphore loop instead of pulling a dependency
@@ -83,7 +121,8 @@ export default defineEventHandler(async (event) => {
       data: {
         scanned: targets.length,
         attempted,
-        updated
+        updated_avatars: updatedAvatars,
+        updated_pushnames: updatedPushnames
       }
     }
   } catch (error) {
