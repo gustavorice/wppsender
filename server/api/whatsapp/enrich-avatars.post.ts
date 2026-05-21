@@ -36,6 +36,10 @@ export default defineEventHandler(async (event) => {
       .single()
     if (accountErr || !account) throw apiError(404, 'Conta nao encontrada.')
     if (account.status !== 'connected') throw apiError(409, 'Conecte o numero antes de buscar fotos.')
+    // Capture into locally-typed constants so TypeScript carries the
+    // non-null narrowing into the async closures below.
+    const accountInstance = account.instance_name as string
+    const accountId = account.id as string
 
     // Pull contacts that are missing avatar OR have no name AND no push_name —
     // those are the ones the UI is rendering as "Contato" / placeholder.
@@ -64,7 +68,7 @@ export default defineEventHandler(async (event) => {
     }) {
       attempted += 1
       const isLid = !isRealPhone(c.wa_id)
-      const profile = await fetchContactProfile(account.instance_name, c.phone || c.wa_id, {
+      const profile = await fetchContactProfile(accountInstance, c.phone || c.wa_id, {
         isLid,
         timeoutMs: 5000
       }).catch(() => null)
