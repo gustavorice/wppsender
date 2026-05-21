@@ -80,7 +80,11 @@ function normalizeConnectionStatus(payload: Record<string, any>): ParsedEvolutio
     return 'disconnected'
   }
 
-  return rawStatus ? 'error' : null
+  // Unknown/transient states (e.g. 'refused', 'unknown', 'reconnecting') —
+  // never flip an already-connected row into 'error' just because Evolution
+  // emitted a state we don't have in our enum. Returning null leaves the
+  // current DB value alone.
+  return null
 }
 
 function extractQrCode(payload: Record<string, any>): string | null {

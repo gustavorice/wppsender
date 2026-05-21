@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { getServerSupabase } from '~~/server/utils/supabase'
 import { requireTenantAuth } from '~~/server/utils/auth'
-import { sendTextMessage } from '~~/server/utils/evolution'
+import { sendTextMessage, getConnectionState } from '~~/server/utils/evolution'
 import { apiError, normalizeError } from '~~/server/utils/errors'
 import { rateLimit } from '~~/server/utils/rateLimit'
 import type { Contact } from '~~/types/entities'
@@ -55,8 +55,22 @@ export default defineEventHandler(async (event) => {
       throw apiError(404, 'Contato nao encontrado neste time.')
     }
 
+    // The webhook can briefly mark the account as 'pending' / 'disconnected'
+    // / 'error' between events even when Evolution is fully connected. Before
+    // failing the send, ask Evolution directly. If the live state is 'open',
+    // self-heal the DB row and continue. This avoids spurious 409s when the
+    // user's session is otherwise fine.
     if (account.status !== 'connected') {
-      throw apiError(409, 'Este numero ainda nao esta conectado.')
+      const live = await getConnectionState(account.instance_name).catch(() => null)
+      if (live?.status === 'connected') {
+        await supabase
+          .from('whatsapp_accounts')
+          .update({ status: 'connected', last_connected_at: new Date().toISOString(), qr_code: null })
+          .eq('id', account.id)
+        account.status = 'connected'
+      } else {
+        throw apiError(409, 'Este numero ainda nao esta conectado.')
+      }
     }
 
     const typedContact = contact as Contact
