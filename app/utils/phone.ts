@@ -127,3 +127,26 @@ export function contactInitial(c?: {
   const m = display.match(/[\p{L}\p{N}]/u)
   return m ? m[0].toUpperCase() : '?'
 }
+
+// Inbox preview text for the last message of a conversation. For text
+// messages we just show the body (truncated by CSS upstream). For media
+// types we render a typed label with an emoji icon so the inbox reads
+// like WhatsApp ("📷 Foto", "🎤 Áudio", "🎥 Vídeo", "📄 Documento")
+// instead of the awkward "[midia]" placeholder.
+export function messagePreview(m?: {
+  type?: string | null
+  body?: string | null
+} | null): string {
+  if (!m) return 'Nova conversa'
+  const body = m.body?.trim()
+  if (body) return body
+  switch (m.type) {
+    case 'image': return '📷 Foto'
+    case 'audio': return '🎤 Áudio'
+    case 'video': return '🎥 Vídeo'
+    case 'document': return '📄 Documento'
+    case 'sticker': return '🌟 Sticker'
+    case 'location': return '📍 Localização'
+    default: return body || 'Nova conversa'
+  }
+}

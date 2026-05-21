@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Contact, Conversation, WhatsAppAccount } from '~~/types/entities'
-import { contactDisplayName, contactPhoneLabel, formatPhone, avatarColor, contactInitial } from '~/utils/phone'
+import { contactDisplayName, contactPhoneLabel, formatPhone, avatarColor, contactInitial, messagePreview } from '~/utils/phone'
 
 type ContactStub = Contact & {
   whatsapp_account?: Pick<WhatsAppAccount, 'id' | 'display_name' | 'phone_number' | 'status'> | null
@@ -117,7 +117,7 @@ watch([search, whatsappAccountId], () => {
             </span>
           </div>
           <p class="mt-1 truncate text-xs text-slate-600">
-            {{ conversation.last_message?.body || 'Nova conversa' }}
+            {{ messagePreview(conversation.last_message) }}
           </p>
         </div>
       </button>
