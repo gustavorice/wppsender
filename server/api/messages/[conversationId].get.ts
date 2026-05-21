@@ -29,6 +29,7 @@ export default defineEventHandler(async (event) => {
       .select('*')
       .eq('clerk_org_id', tenant.orgId)
       .eq('conversation_id', conversationId)
+      .order('sent_at', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true })
       .limit(300)
 

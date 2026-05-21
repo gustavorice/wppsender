@@ -28,7 +28,10 @@ onUnmounted(() => stopPolling())
 
 const toast = useToast()
 const activeMessages = computed(() => messagesForConversation(activeConversationId.value).value)
-const messageLoading = computed(() => messagesStore.loadingConversationId === activeConversationId.value)
+const initialLoading = ref(true)
+const messageLoading = computed(() =>
+  initialLoading.value || messagesStore.loadingConversationId === activeConversationId.value
+)
 
 async function selectConversation(id: string) {
   activeConversationId.value = id
@@ -63,9 +66,16 @@ watch(
 )
 
 onMounted(async () => {
-  await Promise.all([fetchAccounts(), fetchConversations()])
-  if (activeConversationId.value) {
-    await fetchMessages(activeConversationId.value)
+  try {
+    await Promise.all([fetchAccounts(), fetchConversations()])
+    // Pre-fetch messages for the auto-selected first conversation BEFORE
+    // we let the thread render, so the user never sees a flash of the
+    // "Sem mensagens" empty state while we're still loading.
+    if (activeConversationId.value) {
+      await fetchMessages(activeConversationId.value)
+    }
+  } finally {
+    initialLoading.value = false
   }
 })
 </script>
@@ -77,7 +87,7 @@ onMounted(async () => {
       :orphan-contacts="orphanContacts"
       :accounts="accounts"
       :active-conversation-id="activeConversationId"
-      :loading="loading"
+      :loading="loading || initialLoading"
       @select="selectConversation"
       @select-contact="selectContact"
       @filter="filterConversations"

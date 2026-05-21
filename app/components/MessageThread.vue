@@ -67,7 +67,31 @@ watch(
       <p v-else class="text-sm font-medium text-slate-600">Selecione uma conversa</p>
     </div>
 
-    <LoadingState v-if="loading" label="Carregando mensagens" />
+    <div
+      v-if="loading"
+      class="min-h-0 flex-1 space-y-3 overflow-hidden px-4 py-5"
+      aria-busy="true"
+      aria-label="Carregando mensagens"
+    >
+      <div
+        v-for="(skeleton, idx) in [
+          { side: 'left', width: 'w-3/5' },
+          { side: 'right', width: 'w-2/5' },
+          { side: 'left', width: 'w-1/2' },
+          { side: 'right', width: 'w-3/5' },
+          { side: 'left', width: 'w-2/5' }
+        ]"
+        :key="`skeleton-msg-${idx}`"
+        class="flex"
+        :class="skeleton.side === 'right' ? 'justify-end' : 'justify-start'"
+      >
+        <div class="max-w-[78%] space-y-2 rounded-lg px-3 py-2 shadow-sm" :class="skeleton.side === 'right' ? 'bg-emerald-100' : 'border border-slate-200 bg-white'">
+          <div class="h-3 animate-pulse rounded-md bg-slate-200" :class="skeleton.width" />
+          <div class="h-3 w-24 animate-pulse rounded-md bg-slate-200" />
+          <div class="ml-auto h-2 w-10 animate-pulse rounded-md bg-slate-200" />
+        </div>
+      </div>
+    </div>
     <EmptyState
       v-else-if="!conversation"
       class="m-4"

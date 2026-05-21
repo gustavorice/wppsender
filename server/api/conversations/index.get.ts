@@ -51,6 +51,7 @@ export default defineEventHandler(async (event) => {
         .select('*')
         .eq('clerk_org_id', tenant.orgId)
         .in('conversation_id', ids)
+        .order('sent_at', { ascending: false, nullsFirst: false })
         .order('created_at', { ascending: false })
 
       const seen = new Set<string>()
@@ -61,10 +62,25 @@ export default defineEventHandler(async (event) => {
       })
     }
 
-    const hydrated = filteredConversations.map((conversation) => ({
-      ...conversation,
-      last_message: lastMessages.find((m) => m.conversation_id === conversation.id) || null
-    }))
+    const hydrated = filteredConversations.map((conversation) => {
+      const last_message = lastMessages.find((m) => m.conversation_id === conversation.id) || null
+
+      // Defensive: most BR conversations have NULL last_message_at while the
+      // backfill is still in progress. Promote the most recent message's
+      // sent_at (or created_at fallback) so the UI sorts/displays the real
+      // most recent timestamp instead of NULL.
+      const currentTs = conversation.last_message_at ? new Date(conversation.last_message_at).getTime() : 0
+      const messageRaw = last_message ? (last_message.sent_at || last_message.created_at) : null
+      const messageTs = messageRaw ? new Date(messageRaw).getTime() : 0
+      const effectiveTs = Math.max(currentTs, Number.isNaN(messageTs) ? 0 : messageTs)
+      const last_message_at = effectiveTs > 0 ? new Date(effectiveTs).toISOString() : conversation.last_message_at
+
+      return {
+        ...conversation,
+        last_message_at,
+        last_message
+      }
+    })
 
     // 3. Contacts WITHOUT a conversation yet (so the inbox lists everyone
     // from the address book, not just people who already messaged you).

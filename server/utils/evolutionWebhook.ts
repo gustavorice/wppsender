@@ -1,7 +1,7 @@
 import type { MessageType, EvolutionWebhookPayload } from '~~/types/entities'
 import { getServerSupabase } from './supabase'
 import { fetchContactProfile } from './evolution'
-import { isAcceptableJid as _isAcceptableJid, isAcceptablePhone as _isAcceptablePhone, parseJid } from './jid'
+import { isAcceptableJid as _isAcceptableJid, isAcceptablePhone as _isAcceptablePhone, parseJid, isRealPhone } from './jid'
 
 interface ParsedEvolutionEvent {
   instanceName: string | null
@@ -379,6 +379,39 @@ function normalizeChatRecord(record: any): { waId: string; phone: string; name: 
   }
 }
 
+// Resolve LID-like wa_ids in a batch to their real BR/intl phone equivalents
+// by looking up contacts.lid_alt. Returns a map of LID -> { waId, phone } for
+// every LID that has a matching BR contact. LIDs without a match are absent
+// from the map (caller decides whether to keep them or drop them).
+async function resolveLidsToBr(
+  account: WhatsAppAccountRow,
+  lidWaIds: string[]
+): Promise<Map<string, { waId: string; phone: string }>> {
+  const out = new Map<string, { waId: string; phone: string }>()
+  if (lidWaIds.length === 0) return out
+
+  const supabase = getServerSupabase()
+  const { data, error } = await supabase
+    .from('contacts')
+    .select('wa_id, phone, lid_alt')
+    .eq('clerk_org_id', account.clerk_org_id)
+    .eq('whatsapp_account_id', account.id)
+    .in('lid_alt', lidWaIds)
+
+  if (error || !data) return out
+
+  for (const row of data) {
+    const lid = (row as any).lid_alt as string | null
+    const waId = (row as any).wa_id as string | null
+    const phone = (row as any).phone as string | null
+    if (lid && waId) {
+      out.set(lid, { waId, phone: phone || waId })
+    }
+  }
+
+  return out
+}
+
 async function persistContactsBatch(
   account: WhatsAppAccountRow,
   records: any[]
@@ -436,6 +469,23 @@ async function persistChatsBatch(
 
   if (normalized.length === 0) {
     return { conversations: 0 }
+  }
+
+  // === LID → BR resolution (batch) ===
+  // Any wa_id that doesn't look like a real phone is treated as a LID and
+  // looked up against contacts.lid_alt. Resolved entries are rewritten to
+  // the BR contact's wa_id/phone before the upsert, so we never recreate a
+  // LID-only contact row when the BR row already exists.
+  const lidsToResolve = Array.from(new Set(normalized.filter((n) => !isRealPhone(n.waId)).map((n) => n.waId)))
+  const lidMap = await resolveLidsToBr(account, lidsToResolve)
+  for (const item of normalized) {
+    if (!isRealPhone(item.waId)) {
+      const resolved = lidMap.get(item.waId)
+      if (resolved) {
+        item.waId = resolved.waId
+        item.phone = resolved.phone
+      }
+    }
   }
 
   const supabase = getServerSupabase()
@@ -727,9 +777,45 @@ async function persistMessagesBatch(
   }
   if (parsedMessages.length === 0) return { messages: 0 }
 
+  // === LID → BR resolution (batch) ===
+  // Collect every wa_id that isn't a real phone, look them up against
+  // contacts.lid_alt in a single query, then rewrite each message's
+  // identity (waId/phone) to the BR contact before any upsert. This is the
+  // bulk equivalent of what persistSingleMessage does per-message and is
+  // critical to avoid recreating LID-only contacts on every history replay.
+  const lidsToResolve = Array.from(
+    new Set(parsedMessages.filter((m) => !isRealPhone(m.waId)).map((m) => m.waId))
+  )
+  const lidMap = await resolveLidsToBr(account, lidsToResolve)
+
+  // Rewrite resolved LIDs in-place; drop outbound-only LID messages whose
+  // contact does not exist yet (they would create pure-noise rows: no name,
+  // no avatar, no counter-party identity). Inbound LIDs without a match are
+  // kept — they represent real people we just haven't merged yet.
+  const usable: ParsedEvolutionMessage[] = []
+  for (const m of parsedMessages) {
+    if (isRealPhone(m.waId)) {
+      usable.push(m)
+      continue
+    }
+    const resolved = lidMap.get(m.waId)
+    if (resolved) {
+      m.waId = resolved.waId
+      m.phone = resolved.phone
+      usable.push(m)
+      continue
+    }
+    if (m.direction === 'outbound') {
+      // Skip outbound-only LID with no resolution.
+      continue
+    }
+    usable.push(m)
+  }
+  if (usable.length === 0) return { messages: 0 }
+
   // Step 1: bulk upsert contacts (dedup by wa_id, keep first non-null name).
   const contactByWaId = new Map<string, { name: string | null; phone: string }>()
-  for (const m of parsedMessages) {
+  for (const m of usable) {
     if (!contactByWaId.has(m.waId)) {
       contactByWaId.set(m.waId, { name: m.direction === 'inbound' ? m.name : null, phone: m.phone })
     }
@@ -756,7 +842,7 @@ async function persistMessagesBatch(
 
   // Step 2: bulk upsert conversations (one per contact).
   const conversationSeed = new Map<string, string>() // waId -> max sentAt
-  for (const m of parsedMessages) {
+  for (const m of usable) {
     const prev = conversationSeed.get(m.waId)
     if (!prev || new Date(m.sentAt).getTime() > new Date(prev).getTime()) {
       conversationSeed.set(m.waId, m.sentAt)
@@ -787,7 +873,7 @@ async function persistMessagesBatch(
   }
 
   // Step 3: bulk upsert messages (chunked to avoid payload size limits).
-  const messageRows = parsedMessages.flatMap((m) => {
+  const messageRows = usable.flatMap((m) => {
     const cid = contactIdByWaId.get(m.waId)
     if (!cid) return []
     const convId = convIdByContactId.get(cid)

@@ -66,3 +66,21 @@ export function phoneFromJid(rawJid: string | null | undefined): string {
   if (!p) return ''
   return p.id.replace(/\D/g, '')
 }
+
+// Heuristic for "this looks like a real phone number, not a LID identifier".
+// Covers BR (12-13 digits starting with 55), US (11 digits starting with 1),
+// and a curated list of common country codes (2 or 3 digit prefixes) for
+// 10-13 digit numbers. Anything that doesn't match is treated as a LID-like
+// opaque identifier and routed through the LID→BR resolution path.
+export function isRealPhone(waId: string | null | undefined): boolean {
+  if (!waId) return false
+  if (waId.startsWith('55') && (waId.length === 12 || waId.length === 13)) return true
+  if (waId.startsWith('1') && waId.length === 11) return true
+  if (waId.length >= 10 && waId.length <= 13) {
+    const cc2 = waId.slice(0, 2)
+    const cc3 = waId.slice(0, 3)
+    const known = new Set(['44', '49', '33', '34', '39', '31', '52', '54', '57', '58', '56', '51', '53', '61', '64', '82', '81', '86', '351', '353', '358'])
+    return known.has(cc2) || known.has(cc3)
+  }
+  return false
+}

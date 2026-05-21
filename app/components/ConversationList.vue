@@ -57,7 +57,23 @@ watch([search, whatsappAccountId], () => {
       </select>
     </div>
 
-    <LoadingState v-if="loading" label="Carregando conversas" />
+    <div v-if="loading" class="min-h-0 flex-1 overflow-hidden" aria-busy="true" aria-label="Carregando conversas">
+      <div
+        v-for="n in 6"
+        :key="`skeleton-conv-${n}`"
+        class="flex w-full items-start gap-3 border-b border-slate-100 px-3 py-3"
+      >
+        <div class="h-10 w-10 shrink-0 animate-pulse rounded-md bg-slate-200" />
+        <div class="min-w-0 flex-1 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <div class="h-3.5 w-2/5 animate-pulse rounded-md bg-slate-200" />
+            <div class="h-2.5 w-8 shrink-0 animate-pulse rounded-md bg-slate-200" />
+          </div>
+          <div class="h-3 w-4/5 animate-pulse rounded-md bg-slate-200" />
+          <div class="h-2.5 w-1/3 animate-pulse rounded-md bg-slate-200" />
+        </div>
+      </div>
+    </div>
     <EmptyState
       v-else-if="conversations.length === 0 && (!search || orphanList.length === 0)"
       class="m-3"

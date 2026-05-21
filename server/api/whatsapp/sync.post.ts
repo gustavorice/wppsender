@@ -4,6 +4,7 @@ import { requireOrgAdmin } from '~~/server/utils/auth'
 import { fetchContacts, fetchChats } from '~~/server/utils/evolution'
 import { normalizeError } from '~~/server/utils/errors'
 import { rateLimit } from '~~/server/utils/rateLimit'
+import { isRealPhone } from '~~/server/utils/jid'
 
 const schema = z.object({
   whatsapp_account_id: z.string().uuid()
@@ -42,18 +43,6 @@ export default defineEventHandler(async (event) => {
     // contact rows always use the real BR phone as wa_id; the LID is stored
     // on contacts.lid_alt so the webhook can map future @lid messages back
     // to the real contact without creating duplicates.
-    const isRealPhone = (waId: string): boolean => {
-      if (!waId) return false
-      if (waId.startsWith('55') && (waId.length === 12 || waId.length === 13)) return true
-      if (waId.startsWith('1') && waId.length === 11) return true
-      if (waId.length >= 10 && waId.length <= 13) {
-        const cc2 = waId.slice(0, 2)
-        const cc3 = waId.slice(0, 3)
-        const known = new Set(['44', '49', '33', '34', '39', '31', '52', '54', '57', '58', '56', '51', '53', '61', '64', '82', '81', '86', '351', '353', '358'])
-        return known.has(cc2) || known.has(cc3)
-      }
-      return false
-    }
     const norm = (s: string | null | undefined) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ')
 
     const realByName = new Map<string, typeof evolutionContacts[number]>()

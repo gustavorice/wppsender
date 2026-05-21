@@ -1,6 +1,17 @@
 import { defineStore } from 'pinia'
 import type { Message } from '~~/types/entities'
 
+// Resolve a message's sort timestamp. Prefers WhatsApp's delivery time
+// (sent_at); falls back to local insert time (created_at). Rows missing
+// both end up at the bottom — keeping optimistic outbound at the end of
+// the list even before the server echoes back.
+function messageTs(m: Message): number {
+  const raw = m.sent_at || m.created_at
+  if (!raw) return Number.POSITIVE_INFINITY
+  const t = new Date(raw).getTime()
+  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t
+}
+
 export const useMessagesStore = defineStore('messages', {
   state: () => ({
     byConversationId: {} as Record<string, Message[]>,
@@ -15,8 +26,8 @@ export const useMessagesStore = defineStore('messages', {
       const serverIds = new Set(messages.map((m) => m.wa_message_id).filter(Boolean))
       const survivingPending = pending.filter((p) => p.wa_message_id && !serverIds.has(p.wa_message_id))
       const merged = [...messages, ...survivingPending].sort((a, b) => {
-        const aTs = new Date(a.sent_at || a.created_at).getTime()
-        const bTs = new Date(b.sent_at || b.created_at).getTime()
+        const aTs = messageTs(a)
+        const bTs = messageTs(b)
         return aTs - bTs
       })
       this.byConversationId[conversationId] = merged
@@ -37,8 +48,8 @@ export const useMessagesStore = defineStore('messages', {
         return
       }
       this.byConversationId[message.conversation_id] = [...current, message].sort((a, b) => {
-        const aTs = new Date(a.sent_at || a.created_at).getTime()
-        const bTs = new Date(b.sent_at || b.created_at).getTime()
+        const aTs = messageTs(a)
+        const bTs = messageTs(b)
         return aTs - bTs
       })
     },
